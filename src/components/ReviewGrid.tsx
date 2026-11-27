@@ -59,7 +59,7 @@ export function ReviewGrid({ co, pur, initial, lines, ignored, locked, certs }: 
                     <td className="g"><span className="mono">{r.stock_code}</span><div className="small mute" style={{ maxWidth: 220 }}>{r.stock_desc}</div></td>
                     <td className="g num">{locked ? r.qty : <input type="number" step="0.001" value={r.qty} onChange={(e) => set(i, "qty", Number(e.target.value))} style={{ width: 90, textAlign: "right" }} />}</td>
                     <td className={`y ${flags.some((f) => f.startsWith("date")) ? "flag" : ""}`}>{locked ? r.cert_date : <input type="date" value={r.cert_date ?? ""} onChange={(e) => set(i, "cert_date", e.target.value || null)} />}</td>
-                    <td className="y">{locked ? r.cert_no : <input value={r.cert_no ?? ""} onChange={(e) => set(i, "cert_no", e.target.value)} style={{ width: 90 }} />}{cert && <div><a className="small" href={cert.href} target="_blank" rel="noreferrer">View</a></div>}</td>
+                    <td className="y">{locked ? r.cert_no : <input value={r.cert_no ?? ""} onChange={(e) => set(i, "cert_no", e.target.value)} style={{ width: 90 }} />}{cert && <div><a className="small" href={cert.href} target="certview">View</a></div>}</td>
                     <td className={`y ${!r.heat_no ? "flag" : ""}`}>{locked ? r.heat_no : <input value={r.heat_no ?? ""} onChange={(e) => set(i, "heat_no", e.target.value)} style={{ width: 100 }} />}</td>
                     <td className={`y ${needGrade && !r.grade_remark ? "flag" : ""}`}>
                       {locked ? r.grade || REMARKS.find((x) => x[0] === r.grade_remark)?.[1] : (

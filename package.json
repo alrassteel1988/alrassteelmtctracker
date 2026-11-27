@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsx tests/l0037354.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "try-ai": "tsx --conditions=react-server scripts/try-ai.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.14.0",

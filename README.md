@@ -59,3 +59,10 @@ npm test                      # offline check of matching + Excel against the L0
 - `src/lib/po.ts` - file registration, AI runs, Excel creation.
 - `src/app/api/uploader/*` - endpoints for the store PC uploader (key-authenticated).
 - `uploader/` - Windows PowerShell uploader and installer.
+
+## AI accuracy test (before go-live)
+Run the AI on real POs without the database, comparing with what the store keyed by hand:
+```
+ANTHROPIC_API_KEY=... npm run try-ai -- --pur L0037354 --expect "mtc - l0037354.xlsx" "MTC - LP0037354.pdf"
+```
+It prints the rows the app would export, the checks, and every field that differs from the keyed Excel.

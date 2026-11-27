@@ -136,6 +136,20 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
         <>
           <div className="head"><div><h2 style={{ fontSize: 24 }}>{locked ? "Approved rows" : `Review PO ${pur}`}</h2>
             <p className="mute small">{summary.at ? `Read ${dubai(summary.at)}. ` : ""}Check the yellow fields against the certificates{locked ? "" : ", then approve"}. Click View to open a certificate.</p></div></div>
+          {hasMtc && (
+            <div className="card soft">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <h3>Certificates</h3>
+                <span className="row">
+                  {files.filter((f) => f.kind === "mtc").map((f) => (
+                    <a key={f.id} className="btn sm" href={`/api/files/${f.id}`} target="certview">{f.original_name}</a>
+                  ))}
+                </span>
+              </div>
+              <iframe name="certview" title="Certificate" src={`/api/files/${files.find((f) => f.kind === "mtc")!.id}`} style={{ width: "100%", height: 560, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }} />
+              <p className="small mute">Originals stored unchanged. Click View on a row to jump to its certificate page.</p>
+            </div>
+          )}
           <ReviewGrid
             key={JSON.stringify(rows.map((r) => r.id))}
             co={co} pur={pur} initial={rows} lines={(lines ?? []) as PoLine[]} ignored={summary.ignored_rows?.length ?? 0} locked={locked}
