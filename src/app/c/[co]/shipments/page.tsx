@@ -20,7 +20,7 @@ export default async function Shipments({ params, searchParams }: { params: Prom
     .limit(500);
   if (sp.status) q = q.eq("status", sp.status);
   if (sp.type === "LP" || sp.type === "IMP") q = q.eq("po_type", sp.type);
-  const { data } = await q;
+  const { data, error } = await q;
   const term = (sp.q ?? "").trim().toUpperCase();
   const rows = (data ?? []).filter((p) => {
     if (!term) return true;
@@ -37,6 +37,12 @@ export default async function Shipments({ params, searchParams }: { params: Prom
         <ImportPoList co={co} />
         <Link className="btn p" href={`/c/${co}/intake`}>New MTC intake</Link>
       </div>
+      {error && (
+        <div className="note err">
+          Purchase orders could not be loaded: {error.message}.
+          {/shipment_date|supplier_contract_no|column/i.test(error.message) && " The database is missing the latest update. An admin needs to run supabase/migrations/0002_po_list_import.sql and 0003_partial_batches.sql in the Supabase SQL editor."}
+        </div>
+      )}
       <form className="row">
         <input name="q" defaultValue={sp.q} placeholder="Search PO, GRN, heat, certificate, supplier" style={{ maxWidth: 380 }} />
         <select name="type" defaultValue={sp.type ?? ""} style={{ maxWidth: 160 }}>
