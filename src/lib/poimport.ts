@@ -13,7 +13,7 @@ const ALIASES: Record<string, string[]> = {
   date: ["doc date", "pur date", "po date", "date"],
   supplier_code: ["party code", "supplier code", "supp. code", "supp code"],
   supplier_name: ["party name", "supplier name", "supplier"],
-  contract: ["supp. contract no", "supp contract no", "contract no", "supplier contract no"],
+  contract: ["supp. contract no", "supp contract no", "suppl. contract no", "suppl contract no", "supplier contract no", "contract no", "contract"],
   shipment: ["shipment date", "eta", "expected date", "expected arrival"],
   code: ["stock code", "item code"],
   desc: ["stock desc", "stock description", "description"],
@@ -89,7 +89,8 @@ export async function parsePoList(buf: ArrayBuffer): Promise<{ pos: ImportedPo[]
       po = {
         pur_no: pur,
         pur_date: toIso(get("date")),
-        supplier_code: text(get("supplier_code")) || null,
+        // only a real code (A1078); never a date or other stray value from a shifted column
+        supplier_code: /^[A-Z0-9-]{2,12}$/i.test(text(get("supplier_code"))) ? text(get("supplier_code")).toUpperCase() : null,
         supplier_name: text(get("supplier_name")) || null,
         supplier_contract_no: text(get("contract")) || null,
         shipment_date: toIso(get("shipment")),

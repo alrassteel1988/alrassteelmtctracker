@@ -87,7 +87,7 @@ export function purFromFileName(name: string): string | null {
   const m = n.match(/(?:^|[^A-Za-z0-9])(LP?|MP)\s*-?\s*(\d{5,9})/i);
   if (m) return (m[1].toUpperCase() === "MP" ? "MP" : "L") + m[2];
   // ARBM import: IPO#G063, "IPO G063", or a name starting with G063
-  const g = n.match(/(?:^|[^A-Za-z0-9])IPO\s*[-#:]?\s*(G\d{2,4})(?!\d)/i) ?? n.match(/^(G\d{3,4})(?=[\s_\-.]|$)/i);
+  const g = n.match(/(?:^|[^A-Za-z0-9])IPO\s*[-#:]?\s*(G\d{2,4}[A-Z]?)(?![\dA-Z])/i) ?? n.match(/^(G\d{3,4})(?=[\s_\-.]|$)/i);
   if (g) return normalisePur(g[1]);
   // ARST import: IPO#01259, "IPO 1259", or a name starting with 01259
   const ipo = n.match(/(?:^|[^A-Za-z0-9])IPO\s*[-#:]?\s*(\d{4,6})(?!\d)/i) ?? n.match(/^(\d{5})(?![\d\/.,])/);
@@ -109,7 +109,8 @@ export function normalisePur(s: string | number) {
   let t = String(s).trim().toUpperCase().replace(/\s+/g, "");
   t = t.replace(/^(LPO|IPO|PUR|PO)[-#:.]*(?=[A-Z0-9])/, "");
   t = t.replace(/^LP(?=\d)/, "L");
-  if (/^G\d{1,4}$/.test(t)) t = "G" + t.slice(1).padStart(3, "0");
+  const g = t.match(/^G(\d{1,4})([A-Z]?)$/);
+  if (g) t = `G${g[1].padStart(3, "0")}${g[2]}`;
   return /^\d{1,6}$/.test(t) ? t.padStart(5, "0") : t;
 }
 
@@ -131,4 +132,4 @@ export function purCompanyProblem(co: string, pur: string): string | null {
 }
 
 /** L0037354 / L009263 / L020491 (local), 01259 (ARST IPO#), G063 (ARBM IPO#), MP000921 (older import purchase) */
-export const PUR_RE = /^(L\d{5,9}|MP\d{5,9}|\d{5,6}|G\d{3,4})$/;
+export const PUR_RE = /^(L\d{5,9}|MP\d{5,9}|\d{5,6}|G\d{3,4}[A-Z]?)$/;
