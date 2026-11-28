@@ -283,6 +283,53 @@ export async function goToPo(co: string, form: FormData) {
   redirect(`/c/${code}/po/${pur}`);
 }
 
+/** Load or refresh the company's supplier list from the ERP export (Supplier Code, Supplier). */
+export async function importSuppliers(co: string, form: FormData): Promise<ActionResult & { summary?: string[] }> {
+  try {
+    const { db, co: code } = await ctx(co);
+    const file = form.get("file");
+    if (!(file instanceof File) || !file.size) return { ok: false, message: "Choose the Excel file first." };
+    if (file.size > 4 * 1024 * 1024) return { ok: false, message: "The file is larger than 4 MB." };
+    const { parseSupplierList } = await import("@/lib/supplierimport");
+    const { suppliers, skipped } = await parseSupplierList(await file.arrayBuffer());
+    if (!suppliers.length) return { ok: false, message: skipped[0] ?? "No suppliers found in the file." };
+    const { error } = await db.from("suppliers").upsert(
+      suppliers.map((s) => ({ company_code: code, code: s.code, name: s.name, updated_at: new Date().toISOString() })),
+      { onConflict: "company_code,name_key" },
+    );
+    if (error) throw new Error(/suppliers|schema cache|does not exist/i.test(error.message)
+      ? `${error.message}. The database needs the supplier table: an admin should run supabase/migrations/0004_suppliers.sql in the Supabase SQL editor, then try again.`
+      : error.message);
+    const filled = await fillSupplierCodes(db, code);
+    await audit(db, code, null, "suppliers.imported", { file: file.name, suppliers: suppliers.length, filled, skipped: skipped.length });
+    revalidatePath(`/c/${code}`, "layout");
+    return {
+      ok: true,
+      summary: [
+        `${suppliers.length} suppliers loaded from ${file.name}.`,
+        ...(filled ? [`Supplier code filled in on ${filled} purchase order(s).`] : []),
+        ...(skipped.length ? [`Skipped ${skipped.length} row(s): ${skipped.slice(0, 5).join("; ")}`] : []),
+      ],
+    };
+  } catch (e) {
+    return err(e);
+  }
+}
+
+/** Set supplier_code on the company's POs that only have a supplier name. Returns how many were filled. */
+async function fillSupplierCodes(db: Awaited<ReturnType<typeof supabaseServer>>, code: string) {
+  const { supplierKey } = await import("@/lib/supplierimport");
+  const [{ data: sup, error }, { data: pos }] = await Promise.all([
+    db.from("suppliers").select("code, name_key").eq("company_code", code),
+    db.from("purchase_orders").select("id, supplier_name, supplier_code").eq("company_code", code),
+  ]);
+  if (error || !sup?.length) return 0;
+  const byKey = new Map(sup.map((s) => [s.name_key as string, s.code as string]));
+  const todo = (pos ?? []).filter((p) => !p.supplier_code && byKey.has(supplierKey(p.supplier_name)));
+  await Promise.all(todo.map((p) => db.from("purchase_orders").update({ supplier_code: byKey.get(supplierKey(p.supplier_name)) }).eq("id", p.id)));
+  return todo.length;
+}
+
 export async function addMillAlias(co: string, form: FormData) {
   const { db, co: code } = await ctx(co);
   const printed = String(form.get("printed") ?? "").trim();
@@ -359,6 +406,7 @@ export async function importPoList(co: string, form: FormData): Promise<ActionRe
         db.from("po_lines").update({ purchase_qty: l.purchase_qty, balance_qty: l.balance_qty }).eq("po_id", poId).eq("stock_code", l.stock_code)));
     }
     const kept = keep.length;
+    await fillSupplierCodes(db, code).catch(() => 0);
     await audit(db, code, null, "po_list.imported", { file: file.name, pos: pos.length, created, updated, lines: linesWritten, skipped: skipped.length });
     revalidatePath(`/c/${code}`, "layout");
     const summary = [
