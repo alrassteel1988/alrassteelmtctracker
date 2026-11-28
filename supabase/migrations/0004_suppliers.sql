@@ -16,7 +16,7 @@ drop policy if exists "suppliers by company" on public.suppliers;
 create policy "suppliers by company" on public.suppliers for all to authenticated
   using (can_access(company_code)) with check (can_access(company_code));
 
--- ARST supplier list (59 rows, from ARST SUPPLIER LIST.xlsx)
+-- ARST supplier list (60 rows, from the updated ARST SUPPLIER LIST.xlsx)
 insert into public.suppliers (company_code, code, name) values
   ('ARST', 'A1109', 'ALSTEEL TRADING COMPANY LIMITED'),
   ('ARST', 'A1075', 'AMNS MIDDLE EAST FZE'),
@@ -26,6 +26,7 @@ insert into public.suppliers (company_code, code, name) values
   ('ARST', 'B1022', 'BAOHUA STEEL INTERNATIONAL PTE.LIMITED'),
   ('ARST', 'B1023', 'BAOSTEEL IRON AND STEEL GROUP CO., LTD'),
   ('ARST', 'C1004', 'CELSA COMPANIA ESPANOLA DE-LAMINACIO S.L'),
+  ('ARST', 'C1037', 'CHEONGFULI (HONG KONG) COMPANY LTD.'),
   ('ARST', 'C1025', 'CNBM(HONG KONG)LIMITED'),
   ('ARST', 'C1027', 'COS GATE DMCC'),
   ('ARST', 'C1023', 'CRESCENT RESOURCES HONGKONG CO., LIMITED'),
