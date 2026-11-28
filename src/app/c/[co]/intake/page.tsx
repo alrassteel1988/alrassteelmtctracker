@@ -13,9 +13,11 @@ const FILE_STATUS: Record<string, [string, string]> = {
 export default async function Intake({ params }: { params: Promise<{ co: string }> }) {
   const { user, co } = await requireCompany((await params).co);
   const db = await supabaseServer();
-  const [{ data: files }, { data: devices }] = await Promise.all([
+  const [{ data: files }, { data: devices }, { data: pos }] = await Promise.all([
     db.from("files").select("id, original_name, kind, pur_no_hint, status, source, created_at, devices(name)").eq("company_code", co).order("created_at", { ascending: false }).limit(40),
     db.from("devices").select("name, last_seen_at, inbox_folder").eq("company_code", co).eq("active", true),
+    // POs already in the tracker, open ones first, for the PUR# pick list
+    db.from("purchase_orders").select("pur_no, supplier_name, po_type, status, shipment_date").eq("company_code", co).neq("status", "erp_done").order("pur_no", { ascending: false }).limit(1000),
   ]);
   return (
     <Shell user={user} co={co} active="intake">
@@ -70,7 +72,7 @@ export default async function Intake({ params }: { params: Promise<{ co: string 
         </div>
         <p className="small mute">Name files starting with the PUR#. A file with &quot;PO&quot; in its name is read as the purchase order; anything else as an MTC. Re-saved copies are skipped automatically.</p>
       </div>
-      <UploadForm co={co} />
+      <UploadForm co={co} pos={pos ?? []} />
     </Shell>
   );
 }
