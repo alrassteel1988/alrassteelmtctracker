@@ -77,8 +77,8 @@ const STATUS: Record<string, [string, string]> = {
   review: ["Ready to review", "amber"],
   blocked: ["Blocked", "red"],
   partial: ["Part approved", "blue"],
-  approved: ["Excel ready", "green"],
-  erp_done: ["In ERP", "green"],
+  approved: ["Excel ready", "complete"],
+  erp_done: ["In ERP", "complete"],
 };
 export function StatusBadge({ s }: { s: string }) {
   const [t, c] = STATUS[s] ?? [s, ""];

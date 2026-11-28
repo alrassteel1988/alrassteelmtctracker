@@ -65,13 +65,13 @@ export default async function Shipments({ params, searchParams }: { params: Prom
                 <td className="nowrap">{dmy(p.pur_date ?? p.created_at)}</td>
                 <td><span className={`tag ${p.po_type === "IMP" ? "imp" : ""}`}>{p.po_type}</span><div className="small mute">{p.doctype}</div></td>
                 <td className="mono">{p.pur_no}</td>
-                <td>{p.supplier_name}{(p.supplier_code || p.supplier_contract_no) && <div className="small mute">{[p.supplier_code, p.supplier_contract_no].filter(Boolean).join(" · ")}</div>}</td>
+                <td><span className="supplier">{p.supplier_name}</span>{(p.supplier_code || p.supplier_contract_no) && <div className="small mute">{[p.supplier_code, p.supplier_contract_no].filter(Boolean).join(" · ")}</div>}</td>
                 <td className="nowrap">{dmy(p.shipment_date)}</td>
                 <td className="num">{p.po_lines?.[0]?.count ?? 0}</td>
                 <td className="small">{(p.receipts ?? []).map((r, i) => <div key={i}>{r.grn_no || "GRN"} · {r.status}</div>)}</td>
                 <td className="nowrap">{dmy(p.header_cert_date)}</td>
                 <td className="small">{p.header_mill}</td>
-                <td>{p.erp_mtc_no ?? <span className="badge">Pending</span>}</td>
+                <td>{p.erp_mtc_no ? <span className="badge complete">{p.erp_mtc_no}</span> : <span className="badge pending">Pending</span>}</td>
                 <td><StatusBadge s={p.status} />{p.status_note && <div className="small mute" style={{ maxWidth: 220 }}>{p.status_note}</div>}</td>
                 <td><Link className="btn sm" href={`/c/${co}/po/${p.pur_no}`}>Open</Link></td>
               </tr>
