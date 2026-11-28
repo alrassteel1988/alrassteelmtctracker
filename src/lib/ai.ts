@@ -50,7 +50,7 @@ async function run<T extends z.ZodType>(schema: T, system: string, content: Anth
 
 // ───────────── PO copy ─────────────
 export const PoSchema = z.object({
-  pur_no: z.string().nullable().describe("Purchase order number as printed, e.g. L0037354 or MP000921"),
+  pur_no: z.string().nullable().describe("Purchase order number as printed, e.g. LPO# LP009263 or LP020491 (local), IPO# 01259 or G063 (import)"),
   pur_date_printed: z.string().nullable(),
   supplier_code: z.string().nullable(),
   supplier_name: z.string().nullable(),

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import { buildExport, runChecks, headerValues, remainingLines } from "../src/lib/match";
 import { buildMtcWorkbook } from "../src/lib/excel";
-import { certNo, normaliseGrade, millName, parseCertDate, purFromFileName, kindFromFileName, normalisePur } from "../src/lib/normalize";
+import { certNo, normaliseGrade, millName, parseCertDate, purFromFileName, kindFromFileName, normalisePur, purType, purCompanyProblem, PUR_RE } from "../src/lib/normalize";
 import type { MtcRead } from "../src/lib/ai";
 
 const grades = [{ pattern: "A\\s*500.*(GR(ADE)?[\\s\\.\\-]*B\\b)", erp_grade: "ASTM A500 GR.B", priority: 10 }];
@@ -34,6 +34,28 @@ assert.equal(purFromFileName("IPO-1240 mtc.pdf"), "01240");
 assert.equal(purFromFileName("01242 MTC KCR.pdf"), "01242");
 assert.equal(purFromFileName("2026 report.pdf"), null);
 assert.equal(normalisePur("IPO 01240"), "01240");
+// company PO coding: ARST LP00XXXX / IPO#XXXXX, ARBM LP020XXX / IPO#GXX
+for (const [raw, pur, type] of [
+  ["LPO#LP009263", "L009263", "LP"], ["LP009263", "L009263", "LP"], ["IPO#01259", "01259", "IMP"], [1259, "01259", "IMP"],
+  ["LPO#LP020491", "L020491", "LP"], ["IPO#G063", "G063", "IMP"], ["g63", "G063", "IMP"], ["LP0037354", "L0037354", "LP"],
+] as const) {
+  assert.equal(normalisePur(raw), pur, String(raw));
+  assert.ok(PUR_RE.test(pur), pur);
+  assert.equal(purType(pur), type, pur);
+}
+assert.equal(purCompanyProblem("ARST", "L009263"), null);
+assert.equal(purCompanyProblem("ARST", "01259"), null);
+assert.equal(purCompanyProblem("ARBM", "L020491"), null);
+assert.equal(purCompanyProblem("ARBM", "G063"), null);
+assert.ok(purCompanyProblem("ARST", "G063"));
+assert.ok(purCompanyProblem("ARST", "L020491"));
+assert.ok(purCompanyProblem("ARBM", "01259"));
+assert.ok(purCompanyProblem("ARBM", "L009263"));
+assert.equal(purFromFileName("IPO#G063 MTC.pdf"), "G063");
+assert.equal(purFromFileName("G063 mill cert.pdf"), "G063");
+assert.equal(purFromFileName("LPO#LP020491 PO.pdf"), "L020491");
+assert.equal(purFromFileName("IPO#01259 MTC.pdf"), "01259");
+assert.equal(purFromFileName("GRADE S355 cert.pdf"), null);
 assert.equal(normalisePur(1240), "01240");
 assert.equal(normalisePur("lp0037354"), "L0037354");
 assert.equal(kindFromFileName("01240 PO.pdf"), "po");

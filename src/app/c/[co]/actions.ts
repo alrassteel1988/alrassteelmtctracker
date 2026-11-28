@@ -5,7 +5,7 @@ import { requireCompany } from "@/lib/auth";
 import { supabaseServer } from "@/lib/supabase/server";
 import { audit, createBatchExcel, extractMtcs, getSettings, readPo, registerFile, ensurePo, refreshPoFromBatches } from "@/lib/po";
 import { headerValues, runChecks, remainingLines, type PoLine } from "@/lib/match";
-import { normalisePur, parseCertDate, PUR_RE } from "@/lib/normalize";
+import { normalisePur, parseCertDate, PUR_RE, purCompanyProblem } from "@/lib/normalize";
 
 export type ActionResult = { ok: boolean; message?: string; pur?: string };
 
@@ -38,7 +38,9 @@ export async function registerUploads(
   try {
     const { db, co: code } = await ctx(co);
     const p = normalisePur(pur);
-    if (!PUR_RE.test(p)) return { ok: false, message: "PUR# should look like L0037354, MP000921 or an IPO# like 01240." };
+    if (!PUR_RE.test(p)) return { ok: false, message: code === "ARBM" ? "The PO number should look like LP020491 (local) or IPO#G063 (import)." : "The PO number should look like LP009263 (local) or IPO#01259 (import)." };
+    const wrongCo = purCompanyProblem(code, p);
+    if (wrongCo) return { ok: false, message: wrongCo };
     await ensurePo(db, code, p);
     const results = [];
     for (const f of files) {
@@ -56,7 +58,7 @@ export async function registerUploads(
 export async function assignFile(co: string, fileId: string, form: FormData) {
   const { db, co: code } = await ctx(co);
   const pur = normalisePur(String(form.get("pur") ?? ""));
-  if (!PUR_RE.test(pur)) return;
+  if (!PUR_RE.test(pur) || purCompanyProblem(code, pur)) return;
   const kind = form.get("kind") === "po" ? "po" : "mtc";
   const poId = await ensurePo(db, code, pur);
   await db.from("files").update({ status: "linked", pur_no_hint: pur, kind }).eq("id", fileId).eq("company_code", code);
@@ -351,7 +353,13 @@ export async function importPoList(co: string, form: FormData): Promise<ActionRe
     if (!(file instanceof File) || !file.size) return { ok: false, message: "Choose the Excel file first." };
     if (file.size > 4 * 1024 * 1024) return { ok: false, message: "The file is larger than 4 MB; split it and import in parts." };
     const { parsePoList } = await import("@/lib/poimport");
-    const { pos, skipped } = await parsePoList(await file.arrayBuffer());
+    const parsed = await parsePoList(await file.arrayBuffer());
+    const skipped = [...parsed.skipped];
+    const pos = parsed.pos.filter((p) => {
+      const why = purCompanyProblem(code, p.pur_no);
+      if (why) skipped.push(why);
+      return !why;
+    });
     if (!pos.length) return { ok: false, message: "No purchase order rows found in the file." };
 
     const { data: existing, error: exErr } = await db

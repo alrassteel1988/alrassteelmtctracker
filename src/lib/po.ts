@@ -1,7 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET } from "./supabase/admin";
-import { kindFromFileName, normalisePur, purFromFileName, parseCertDate } from "./normalize";
+import { kindFromFileName, normalisePur, purFromFileName, parseCertDate, purCompanyProblem, PUR_RE } from "./normalize";
 import { readMtcsForPo, readPoCopy, type AiFile, AI_MODEL } from "./ai";
 import { buildExport, runChecks, remainingLines, type PoLine } from "./match";
 import { buildMtcWorkbook, excelFileName } from "./excel";
@@ -67,7 +67,9 @@ export async function registerFile(db: Db, f: RegisterInput) {
     .eq("company_code", f.company)
     .eq("sha256", f.sha256)
     .maybeSingle();
-  const pur = f.pur ? normalisePur(f.pur) : purFromFileName(f.name);
+  // a number from the other company's series (or not a PO number at all) leaves the file waiting for a PO
+  const guess = f.pur ? normalisePur(f.pur) : purFromFileName(f.name);
+  const pur = guess && PUR_RE.test(guess) && !purCompanyProblem(f.company, guess) ? guess : null;
   const kind = f.kind ?? kindFromFileName(f.name);
   let fileId: string;
   let duplicate = false;
