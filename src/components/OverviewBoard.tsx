@@ -3,10 +3,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { dmy } from "@/lib/normalize";
 import { excelFileName } from "@/lib/excel";
 
+const batchName = (pur: string, n: number) => (n > 1 ? excelFileName(`${pur}-${n}`) : excelFileName(pur));
+
 type Receipt = { status: string; received_date: string | null };
 type Po = {
   id: string; company_code: string; pur_no: string; po_type: "IMP" | "LP"; status: string;
-  excel_path: string | null; erp_mtc_no: string | null; created_at: string; shipment_date: string | null; receipts: Receipt[];
+  excel_path: string | null; erp_mtc_no: string | null; created_at: string; shipment_date: string | null; receipts: Receipt[]; erp_batches: { id: string; batch_no: number; excel_path: string | null }[];
 };
 
 const complete = (p: Po) => p.status === "approved" || p.status === "erp_done";
@@ -25,7 +27,7 @@ function arrival(p: Po): { label: string; date: string | null } {
 export async function OverviewBoard({ db, companies, type, status }: { db: SupabaseClient; companies: string[]; type?: string; status?: string }) {
   const { data } = await db
     .from("purchase_orders")
-    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, shipment_date, receipts(status, received_date)")
+    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, shipment_date, receipts(status, received_date), erp_batches(id, batch_no, excel_path)")
     .in("company_code", companies)
     .order("created_at", { ascending: false })
     .limit(1000);
@@ -89,8 +91,10 @@ export async function OverviewBoard({ db, companies, type, status }: { db: Supab
                   <td>{a.date ? <>{dmy(a.date)} <span className="small mute">{a.label}</span></> : <span className="mute">Not set</span>}</td>
                   <td className="mono"><Link href={`/c/${p.company_code}/po/${p.pur_no}`}>{p.pur_no}</Link></td>
                   <td className="mono"><Link href={`/c/${p.company_code}/po/${p.pur_no}`}>MTC-{p.pur_no}</Link>{p.erp_mtc_no && <div className="small mute">ERP MTC {p.erp_mtc_no}</div>}</td>
-                  <td><span className={`badge ${ok ? "green" : "amber"}`}>{ok ? "Complete" : "Pending"}</span></td>
-                  <td>{p.excel_path ? <a href={`/api/po/${p.id}/excel`}>{excelFileName(p.pur_no)}</a> : <span className="mute">Not created yet</span>}</td>
+                  <td><span className={`badge ${ok ? "green" : p.status === "partial" ? "blue" : "amber"}`}>{ok ? "Complete" : p.status === "partial" ? "Partly pending" : "Pending"}</span></td>
+                  <td>{p.erp_batches?.filter((b) => b.excel_path).length
+                    ? [...p.erp_batches].filter((b) => b.excel_path).sort((a, b) => a.batch_no - b.batch_no).map((b) => <div key={b.id}><a href={`/api/batch/${b.id}/excel`}>{batchName(p.pur_no, b.batch_no)}</a></div>)
+                    : <span className="mute">Not created yet</span>}</td>
                 </tr>
               );
             })}

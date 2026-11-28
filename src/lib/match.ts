@@ -12,7 +12,8 @@ export type Flag =
   | "date_missing"
   | "low_confidence"
   | "mill_unknown"
-  | "qty_mismatch";
+  | "qty_mismatch"
+  | "qty_partial";
 
 export type BuiltLine = {
   seq: number;
@@ -99,7 +100,8 @@ export function buildExport(read: MtcRead, lines: PoLine[], s: Settings) {
       if (d.ambiguous) flags.push("date_ambiguous");
       if (a.confidence === "low") flags.push("low_confidence");
       if (!mill.known) flags.push("mill_unknown");
-      if (total !== round3(Number(line.qty))) flags.push("qty_mismatch");
+      if (total > round3(Number(line.qty))) flags.push("qty_mismatch");
+      else if (total < round3(Number(line.qty))) flags.push("qty_partial");
       out.push({
         seq: 0, po_line_id: line.id, stock_code: line.stock_code, stock_desc: line.stock_desc, unit: line.unit,
         qty: round3(a.qty), cert_date: d.iso, cert_no: certNo(a.cert_no_printed, s.certNoMode),
@@ -117,28 +119,37 @@ export type CheckLine = Pick<BuiltLine, "qty" | "cert_no" | "heat_no" | "grade" 
   grade_remark?: string | null;
 };
 
-/** Checks on the current (possibly hand-edited) rows. `ok:false` blocks approval. */
+/** Checks on the rows waiting for approval, against the PO lines still pending (with their remaining quantity).
+ *  `ok:false` blocks approval; `ok:null` is information. Lines without a certificate stay pending for a later shipment. */
 export function runChecks(rows: CheckLine[], lines: PoLine[], ignoredRows = 0): Check[] {
-  const covered = lines.filter((l) => rows.some((r) => r.po_line_id === l.id && r.cert_no && r.heat_no));
-  const qtyBad = lines.filter((l) => {
-    const t = round3(rows.filter((r) => r.po_line_id === l.id).reduce((s, r) => s + Number(r.qty || 0), 0));
-    return t !== round3(Number(l.qty));
-  });
-  const noGrade = rows.filter((r) => !r.grade && !r.grade_remark);
-  const noDate = rows.filter((r) => !r.cert_date);
-  const noMill = rows.filter((r) => !r.mill_name);
+  const withCert = rows.filter((r) => r.cert_no && r.heat_no);
+  const covered = lines.filter((l) => withCert.some((r) => r.po_line_id === l.id));
+  const totals = (l: PoLine) => round3(withCert.filter((r) => r.po_line_id === l.id).reduce((s, r) => s + Number(r.qty || 0), 0));
+  const over = covered.filter((l) => totals(l) > round3(Number(l.qty)));
+  const under = covered.filter((l) => totals(l) < round3(Number(l.qty)));
+  const noGrade = withCert.filter((r) => !r.grade && !r.grade_remark);
+  const noDate = withCert.filter((r) => !r.cert_date);
+  const noMill = withCert.filter((r) => !r.mill_name);
+  const pendingCount = lines.length - covered.length;
   return [
     {
       key: "coverage",
-      ok: covered.length === lines.length && lines.length > 0,
-      title: "Every PO line has a certificate",
-      detail: `${covered.length} of ${lines.length} lines filled`,
+      ok: lines.length > 0 && covered.length === lines.length ? true : covered.length > 0 ? null : false,
+      title: covered.length === lines.length ? "Every PO line has a certificate" : "Lines with a certificate",
+      detail:
+        covered.length === lines.length
+          ? `${covered.length} of ${lines.length} lines filled`
+          : `${covered.length} of ${lines.length} lines filled. ${pendingCount ? `The other ${pendingCount} stay pending for the next shipment.` : ""}`,
     },
     {
       key: "qty",
-      ok: qtyBad.length === 0,
-      title: "Quantities match the PO",
-      detail: qtyBad.length ? `Check ${qtyBad.map((l) => l.stock_code).join(", ")}` : "Split rows add up to each PO line",
+      ok: over.length === 0,
+      title: "Quantities within the PO",
+      detail: over.length
+        ? `More than ordered on ${over.map((l) => l.stock_code).join(", ")}`
+        : under.length
+          ? `Part shipped (rest stays pending): ${under.map((l) => `${l.stock_code} ${totals(l)} of ${Number(l.qty)}`).join(", ")}`
+          : "Rows add up to each PO line",
     },
     {
       key: "grade",
@@ -159,6 +170,16 @@ export function runChecks(rows: CheckLine[], lines: PoLine[], ignoredRows = 0): 
       detail: ignoredRows ? `${ignoredRows} certificate row(s) are for items not on this PO` : "No certificate rows for items outside this PO",
     },
   ];
+}
+
+/** What is still to be covered on each PO line after the approved batches. */
+export function remainingLines(lines: PoLine[], approved: { po_line_id: string | null; qty: number }[]): PoLine[] {
+  return lines
+    .map((l) => {
+      const done = approved.filter((a) => a.po_line_id === l.id).reduce((s, a) => s + Number(a.qty), 0);
+      return { ...l, qty: round3(Number(l.qty) - done) };
+    })
+    .filter((l) => l.qty > 0.0005);
 }
 
 /** Header MILL Name and Certificate Date for the ERP, per the configured rules. */
@@ -191,5 +212,6 @@ export const FLAG_TEXT: Record<Flag, string> = {
   date_missing: "Certificate date not read",
   low_confidence: "AI was unsure about this match",
   mill_unknown: "Mill name not in the master yet",
-  qty_mismatch: "Split quantities don't add up to the PO line",
+  qty_mismatch: "More than the PO line's pending quantity",
+  qty_partial: "Part of this line: the rest stays pending",
 };

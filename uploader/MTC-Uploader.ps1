@@ -95,9 +95,9 @@ function Save-ApprovedExcel($cfg) {
     try {
       $target = Join-Path $cfg.excel $item.file_name
       $tmp = "$target.download"
-      Invoke-WebRequest -Uri "$($cfg.server)/api/uploader/excel?po=$($item.po_id)" -Headers @{ Authorization = "Bearer $($cfg.key)" } -OutFile $tmp -UseBasicParsing -TimeoutSec 120
+      Invoke-WebRequest -Uri "$($cfg.server)/api/uploader/excel?batch=$($item.batch_id)" -Headers @{ Authorization = "Bearer $($cfg.key)" } -OutFile $tmp -UseBasicParsing -TimeoutSec 120
       Move-Item $tmp $target -Force
-      Invoke-Api $cfg 'Post' '/api/uploader/ack' @{ po_id = $item.po_id; version = $item.version; saved_path = $target } | Out-Null
+      Invoke-Api $cfg 'Post' '/api/uploader/ack' @{ batch_id = $item.batch_id; version = $item.version; saved_path = $target } | Out-Null
       Write-Log "Saved $target"
     } catch {
       Write-Log "Could not save $($item.file_name) yet: $($_.Exception.Message)"

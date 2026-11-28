@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { buildExport, runChecks, headerValues } from "../src/lib/match";
+import { buildExport, runChecks, headerValues, remainingLines } from "../src/lib/match";
 import { buildMtcWorkbook } from "../src/lib/excel";
 import { certNo, normaliseGrade, millName, parseCertDate, purFromFileName, kindFromFileName, normalisePur } from "../src/lib/normalize";
 import type { MtcRead } from "../src/lib/ai";
@@ -81,7 +81,14 @@ assert.equal(h.date, "2026-11-25");
 // a PO line without a certificate blocks the PO and a missing grade is flagged
 const partial = buildExport({ ...read, allocations: read.allocations.slice(0, 3), unmatched_po_lines: [{ po_line_no: 4, reason: "6.0 mm not on any certificate" }] }, lines, { certNoMode: "short", grades, mills });
 assert.deepEqual(partial.lines[3].flags, ["no_certificate", "grade_missing"]);
-assert.equal(runChecks(partial.lines, lines).find((c) => c.key === "coverage")!.ok, false);
+// partial: 3 of 4 lines can be approved now, line 4 stays pending
+assert.equal(runChecks(partial.lines, lines).find((c) => c.key === "coverage")!.ok, null);
+assert.ok(runChecks(partial.lines, lines).every((c) => c.ok !== false));
+const rem = remainingLines(lines, partial.lines.filter((l) => l.cert_no));
+assert.deepEqual(rem.map((l) => [l.stock_code, l.qty]), [["T120060060", 72]]);
+// nothing covered blocks; more than ordered blocks
+assert.equal(runChecks([], lines).find((c) => c.key === "coverage")!.ok, false);
+assert.equal(runChecks([{ ...built.lines[0], qty: 700 }], lines).find((c) => c.key === "qty")!.ok, false);
 
 async function cells(buf: Buffer | ArrayBuffer | string) {
   const wb = new ExcelJS.Workbook();

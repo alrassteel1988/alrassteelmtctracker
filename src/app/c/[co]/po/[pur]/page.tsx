@@ -7,12 +7,11 @@ import { UploadForm } from "@/components/UploadForm";
 import { LinesEditor } from "@/components/LinesEditor";
 import { ReviewGrid } from "@/components/ReviewGrid";
 import { AiButton, CopyButton } from "@/components/PoActions";
-import { addReceipt, deleteReceipt, linkExistingFile, reopen, saveErpNo, saveHeader, setFileKind, unlinkFile, type EditRow } from "../../actions";
+import { addReceipt, deleteReceipt, linkExistingFile, reopenBatch, saveErpNo, saveHeader, setFileKind, unlinkFile, type EditRow } from "../../actions";
 import { dmy, normalisePur } from "@/lib/normalize";
-import { excelFileName } from "@/lib/excel";
-import { getSettings } from "@/lib/po";
+import { getSettings, batchFileName } from "@/lib/po";
 import { dubai } from "@/lib/stats";
-import type { PoLine } from "@/lib/match";
+import { remainingLines, type PoLine } from "@/lib/match";
 
 export const maxDuration = 300; // AI reading of scanned MTCs can take a minute
 
@@ -50,14 +49,17 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
   const { data: certs } = certIds.length
     ? await db.from("certificates").select("id, cert_no_full, file_id, page").in("id", certIds)
     : { data: [] as { id: string; cert_no_full: string; file_id: string; page: number }[] };
-  const { data: deliveries } = await db.from("excel_deliveries").select("delivered_at, excel_version, devices(name, excel_folder)").eq("po_id", po.id).order("delivered_at", { ascending: false }).limit(3);
+  const { data: batches } = await db.from("erp_batches").select("*, batch_deliveries(delivered_at, excel_version, devices(name, excel_folder))").eq("po_id", po.id).order("batch_no");
 
   const locked = ["approved", "erp_done"].includes(po.status);
   const summary = (po.ai_summary ?? {}) as { warnings?: string[]; ignored_rows?: unknown[]; model?: string; at?: string };
   const hasPo = files.some((f) => f.kind === "po");
   const hasMtc = files.some((f) => f.kind === "mtc");
   const linked = new Set(files.map((f) => f.id));
-  const rows: EditRow[] = (exp ?? []).map((e) => ({ ...e, qty: Number(e.qty), flags: (e.flags ?? []) as string[] }));
+  const allRows: (EditRow & { batch_id: string | null })[] = (exp ?? []).map((e) => ({ ...e, qty: Number(e.qty), flags: (e.flags ?? []) as string[] }));
+  const rows = allRows.filter((r) => !r.batch_id); // waiting for review
+  const pendingLines = remainingLines((lines ?? []) as PoLine[], allRows.filter((r) => r.batch_id).map((r) => ({ po_line_id: r.po_line_id, qty: r.qty })));
+  const lastBatch = (batches ?? [])[(batches ?? []).length - 1];
   const xlFolder = settings.excelFolder.replace("{company}", co);
 
   return (
@@ -71,7 +73,7 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
           </p>
         </div>
         {!locked && (
-          <AiButton co={co} pur={pur} kind="mtc" primary label={rows.length ? "Read MTCs again" : "Read PO and MTCs"} disabled={!hasMtc || (!lines?.length && !hasPo)} />
+          <AiButton co={co} pur={pur} kind="mtc" primary label={rows.length ? "Read MTCs again" : batches?.length ? "Read the new MTCs" : "Read PO and MTCs"} disabled={!hasMtc || (!lines?.length && !hasPo)} />
         )}
       </div>
 
@@ -133,14 +135,14 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
         </div>
       </div>
 
-      <LinesEditor co={co} pur={pur} locked={locked || rows.length > 0}
-        certs={(lines ?? []).map((l) => rows.filter((r) => r.po_line_id === l.id && r.cert_no).map((r) => `${r.cert_no}${r.heat_no ? ` (heat ${r.heat_no})` : ""}`))} initial={(lines ?? []).map((l) => ({ stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: Number(l.qty), purchase_qty: l.purchase_qty === null ? null : Number(l.purchase_qty), balance_qty: l.balance_qty === null ? null : Number(l.balance_qty) }))} />
+      <LinesEditor co={co} pur={pur} locked={locked || allRows.length > 0}
+        certs={(lines ?? []).map((l) => allRows.filter((r) => r.po_line_id === l.id && r.cert_no).map((r) => `${r.cert_no}${r.heat_no ? ` (heat ${r.heat_no})` : ""}`))} initial={(lines ?? []).map((l) => ({ stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: Number(l.qty), purchase_qty: l.purchase_qty === null ? null : Number(l.purchase_qty), balance_qty: l.balance_qty === null ? null : Number(l.balance_qty) }))} />
       {!lines?.length && hasPo && <AiButton co={co} pur={pur} kind="po" label="Read lines from the PO copy" />}
 
-      {rows.length > 0 && (
+      {rows.length > 0 && !locked && (
         <>
-          <div className="head"><div><h2 style={{ fontSize: 24 }}>{locked ? "Approved rows" : `Review PO ${pur}`}</h2>
-            <p className="mute small">{summary.at ? `Read ${dubai(summary.at)}. ` : ""}Check the yellow fields against the certificates{locked ? "" : ", then approve"}. Click View to open a certificate.</p></div></div>
+          <div className="head"><div><h2 style={{ fontSize: 24 }}>Review PO {pur}{batches?.length ? ` · shipment ${batches.length + 1}` : ""}</h2>
+            <p className="mute small">{summary.at ? `Read ${dubai(summary.at)}. ` : ""}Check the yellow fields against the certificates, then approve. Lines without a certificate stay pending for the next shipment. Click View to open a certificate.</p></div></div>
           {hasMtc && (
             <div className="card soft">
               <div className="row" style={{ justifyContent: "space-between" }}>
@@ -151,52 +153,67 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
                   ))}
                 </span>
               </div>
-              <iframe name="certview" title="Certificate" src={`/api/files/${files.find((f) => f.kind === "mtc")!.id}`} style={{ width: "100%", height: 560, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }} />
+              <iframe name="certview" title="Certificate" src={`/api/files/${files.filter((f) => f.kind === "mtc").slice(-1)[0].id}`} style={{ width: "100%", height: 560, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }} />
               <p className="small mute">Originals stored unchanged. Click View on a row to jump to its certificate page.</p>
             </div>
           )}
           <ReviewGrid
             key={JSON.stringify(rows.map((r) => r.id))}
-            co={co} pur={pur} initial={rows} lines={(lines ?? []) as PoLine[]} ignored={summary.ignored_rows?.length ?? 0} locked={locked}
+            co={co} pur={pur} initial={rows} lines={pendingLines} ignored={summary.ignored_rows?.length ?? 0} locked={false}
             certs={(certs ?? []).map((c) => ({ id: c.id, no: c.cert_no_full, href: `/api/files/${c.file_id}?page=${c.page ?? 1}` }))}
           />
         </>
       )}
 
-      {locked && (
-        <>
-          <div className="head">
-            <div><h2 style={{ fontSize: 24 }}>ERP Excel · {excelFileName(pur)}</h2><p className="mute small">Approved by {po.approved_by} on {dubai(po.approved_at)}. Same layout as the store&apos;s L0037354 sample.</p></div>
-            <a className="btn p" href={`/api/po/${po.id}/excel`}>Download {excelFileName(pur)}</a>
-            {po.status === "approved" && <form action={reopen.bind(null, co, pur)}><button className="btn">Reopen for changes</button></form>}
-          </div>
-          <div className="note info">
-            <b>Saved to the store PC</b>
-            {deliveries?.length
-              ? deliveries.map((d, i) => { const dev = d.devices as unknown as { name: string; excel_folder: string | null } | null; return <div key={i}>{dev?.name} · <span className="mono">{(dev?.excel_folder || xlFolder)}\{excelFileName(pur)}</span> · {dubai(d.delivered_at)}</div>; })
-              : <div>Waiting for the uploader on the store PC to pick it up into <span className="mono">{xlFolder}</span>. You can also download it above.</div>}
-          </div>
-          <div className="grid2">
-            <div className="card">
-              <h2>In the ERP</h2>
+      {(batches ?? []).map((b) => {
+        const bRows = allRows.filter((r) => r.batch_id === b.id);
+        const fname = batchFileName(pur, b.batch_no);
+        const deliveries = (b.batch_deliveries ?? []) as { delivered_at: string; devices: { name: string; excel_folder: string | null } | null }[];
+        return (
+          <div className="card" key={b.id}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div>
+                <h2>ERP Excel · {fname}</h2>
+                <p className="small mute">{(batches ?? []).length > 1 ? `Shipment ${b.batch_no} · ` : ""}{bRows.length} row(s) · approved by {b.approved_by} on {dubai(b.approved_at)}</p>
+              </div>
+              <span className="row">
+                <a className="btn p" href={`/api/batch/${b.id}/excel`}>Download {fname}</a>
+                {b.id === lastBatch?.id && !b.erp_mtc_no && <form action={reopenBatch.bind(null, co, pur, b.id)}><button className="btn">Reopen for changes</button></form>}
+              </span>
+            </div>
+            <div className="scroll">
+              <table>
+                <thead><tr><th>Stock Code</th><th className="num">Qty</th><th>Cert. Date</th><th>Cert #</th><th>Heat#</th><th>Grade</th><th>MILL Name</th></tr></thead>
+                <tbody>{bRows.map((r) => <tr key={r.id}><td className="mono g">{r.stock_code}</td><td className="num g">{r.qty}</td><td className="y">{dmy(r.cert_date)}</td><td className="y">{r.cert_no}</td><td className="y">{r.heat_no}</td><td className="y">{r.grade ?? r.grade_remark}</td><td className="y">{r.mill_name}</td></tr>)}</tbody>
+              </table>
+            </div>
+            <div className="note info">
+              <b>Saved to the store PC</b>
+              {deliveries.length
+                ? deliveries.slice(0, 2).map((d, i) => <div key={i}>{d.devices?.name} · <span className="mono">{d.devices?.excel_folder || xlFolder}\{fname}</span> · {dubai(d.delivered_at)}</div>)
+                : <div>Waiting for the uploader on the store PC to save it into <span className="mono">{xlFolder}</span>. You can also download it above.</div>}
+            </div>
+            <div className="grid2">
               <div className="steps">
                 <div><span className="n">1</span><div><b>New MTC, select PUR# {pur}</b><div className="small mute">The ERP fills supplier and the green columns ({po.doctype}).</div></div></div>
-                <div><span className="n">2</span><div><b>Load {excelFileName(pur)} with &quot;Fill&quot;</b><div className="small mute">Fills the yellow columns, nothing to type.</div></div></div>
-                <div><span className="n">3</span><div><b>Header</b><div className="small">MILL Name: <b>{po.header_mill}</b><CopyButton text={po.header_mill ?? ""} /></div><div className="small">Certificate Date: <b>{dmy(po.header_cert_date)}</b><CopyButton text={dmy(po.header_cert_date)} /></div></div></div>
-                <div><span className="n">4</span><div><b>Save, then type the ERP MTC No. here</b></div></div>
+                <div><span className="n">2</span><div><b>Load {fname} with &quot;Fill&quot;</b><div className="small mute">Fills the yellow columns, nothing to type.</div></div></div>
+                <div><span className="n">3</span><div><b>Header</b><div className="small">MILL Name: <b>{b.header_mill}</b><CopyButton text={b.header_mill ?? ""} /></div><div className="small">Certificate Date: <b>{dmy(b.header_cert_date)}</b><CopyButton text={dmy(b.header_cert_date)} /></div></div></div>
               </div>
+              <form action={saveErpNo.bind(null, co, pur, b.id)} style={{ display: "grid", gap: 12 }}>
+                <b>ERP MTC No. reference</b>
+                <div className="grid2">
+                  <label className="f">ERP MTC No. *<input name="erp_mtc_no" required defaultValue={b.erp_mtc_no ?? ""} /></label>
+                  <label className="f">ERP MTC Date<input type="date" name="erp_mtc_date" defaultValue={b.erp_mtc_date ?? new Date().toISOString().slice(0, 10)} /></label>
+                </div>
+                <button className="btn p">Save ERP MTC No.</button>
+              </form>
             </div>
-            <form action={saveErpNo.bind(null, co, pur)} className="card">
-              <h2>ERP MTC No. reference</h2>
-              <p className="small mute">Typed in by the store team after saving the MTC in the ERP.</p>
-              <div className="grid2">
-                <label className="f">ERP MTC No. *<input name="erp_mtc_no" required defaultValue={po.erp_mtc_no ?? ""} /></label>
-                <label className="f">ERP MTC Date<input type="date" name="erp_mtc_date" defaultValue={po.erp_mtc_date ?? new Date().toISOString().slice(0, 10)} /></label>
-              </div>
-              <button className="btn p">Save ERP MTC No.</button>
-            </form>
           </div>
-        </>
+        );
+      })}
+
+      {(batches ?? []).length > 0 && pendingLines.length > 0 && rows.length === 0 && (
+        <div className="note"><b>{pendingLines.length} line(s) still waiting for their MTC</b>{pendingLines.map((l) => `${l.stock_code} (${l.qty} ${l.unit})`).join(", ")}. Attach the next shipment&apos;s MTC above and click Read the new MTCs.</div>
       )}
 
       <div className="card">

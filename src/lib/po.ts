@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET } from "./supabase/admin";
 import { kindFromFileName, normalisePur, purFromFileName, parseCertDate } from "./normalize";
 import { readMtcsForPo, readPoCopy, type AiFile, AI_MODEL } from "./ai";
-import { buildExport, runChecks, type PoLine } from "./match";
+import { buildExport, runChecks, remainingLines, type PoLine } from "./match";
 import { buildMtcWorkbook, excelFileName } from "./excel";
 
 type Db = SupabaseClient;
@@ -139,22 +139,29 @@ export async function readPo(db: Db, poId: string, actor: string, force = false)
   return { skipped: false, lines: r.lines.length, warnings: r.warnings };
 }
 
-/** Reads all MTCs linked to the PO, matches them to PO lines, and stores the export rows for review. */
+/** Reads the PO's MTCs (except files already used by approved batches), matches them to the quantities still pending,
+ *  and stores the rows for review. Rows already approved in a batch are never touched. */
 export async function extractMtcs(db: Db, poId: string, actor: string) {
   const { data: po } = await db.from("purchase_orders").select("*, po_files(files(*))").eq("id", poId).single();
   if (!po) throw new Error("PO not found");
-  if (["approved", "erp_done"].includes(po.status)) throw new Error("This PO is already approved. Reopen it before reading again.");
+  if (["approved", "erp_done"].includes(po.status)) throw new Error("Every line of this PO is already approved.");
   const { data: lines } = await db.from("po_lines").select("*").eq("po_id", poId).order("line_no");
   if (!lines?.length) throw new Error("This PO has no lines yet. Read the PO copy or type the lines first.");
-  const files = (po.po_files as { files: Record<string, string> }[]).map((x) => x.files).filter((f) => f.kind === "mtc");
-  if (!files.length) throw new Error("No MTC attached to this PO yet.");
+  const { data: approvedRows } = await db.from("export_lines").select("po_line_id, qty, seq, certificates(file_id)").eq("po_id", poId).not("batch_id", "is", null);
+  const pending = remainingLines(lines as PoLine[], (approvedRows ?? []).map((r) => ({ po_line_id: r.po_line_id, qty: Number(r.qty) })));
+  if (!pending.length) throw new Error("Every line of this PO is already approved.");
+  const usedFiles = new Set((approvedRows ?? []).map((r) => (r.certificates as unknown as { file_id: string } | null)?.file_id).filter(Boolean));
+  const files = (po.po_files as { files: Record<string, string> }[])
+    .map((x) => x.files)
+    .filter((f) => f.kind === "mtc" && !usedFiles.has(f.id));
+  if (!files.length) throw new Error(usedFiles.size ? "No new MTC attached since the last approval. Attach the next shipment's MTC." : "No MTC attached to this PO yet.");
 
   await db.from("purchase_orders").update({ status: "reading", status_note: null }).eq("id", poId);
   try {
     const aiFiles = await Promise.all(files.map((f) => loadFile(db, f.storage_path, f.original_name, f.mime_type)));
-    const res = await readMtcsForPo(aiFiles, po.pur_no, lines.map((l) => ({ ...l, qty: Number(l.qty) })));
+    const res = await readMtcsForPo(aiFiles, po.pur_no, pending.map((l) => ({ ...l, qty: Number(l.qty) })));
     const settings = await getSettings(db);
-    const built = buildExport(res.data, lines as PoLine[], settings);
+    const built = buildExport(res.data, pending, settings);
 
     // Certificates: stored once per file + number, reused by every PO that links the file
     const certIds = new Map<string, string>();
@@ -174,23 +181,25 @@ export async function extractMtcs(db: Db, poId: string, actor: string) {
         if (data) certIds.set(c.cert_no_full, data.id);
       }
     }
-    await db.from("export_lines").delete().eq("po_id", poId);
+    await db.from("export_lines").delete().eq("po_id", poId).is("batch_id", null);
+    const startSeq = Math.max(0, ...(approvedRows ?? []).map((r) => r.seq));
     const { error } = await db.from("export_lines").insert(
       built.lines.map((l) => ({
-        po_id: poId, seq: l.seq, po_line_id: l.po_line_id, stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: l.qty,
+        po_id: poId, seq: startSeq + l.seq, po_line_id: l.po_line_id, stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: l.qty,
         cert_date: l.cert_date, cert_no: l.cert_no, heat_no: l.heat_no, grade: l.grade, mill_name: l.mill_name,
         certificate_id: l.cert_no_full ? certIds.get(l.cert_no_full) ?? null : null,
         flags: l.note ? [...l.flags, `note:${l.note}`] : l.flags,
       })),
     );
     if (error) throw new Error(error.message);
-    const checks = runChecks(built.lines, lines as PoLine[], res.data.ignored_rows.length);
-    const blocked = checks.find((c) => c.key === "coverage" && c.ok === false);
+    const checks = runChecks(built.lines, pending, res.data.ignored_rows.length);
+    const none = checks.find((c) => c.key === "coverage")?.ok === false;
+    const unmatched = res.data.unmatched_po_lines.map((u) => `Line ${u.po_line_no}: ${u.reason}`).join("; ");
     await db
       .from("purchase_orders")
       .update({
-        status: blocked ? "blocked" : "review",
-        status_note: blocked ? res.data.unmatched_po_lines.map((u) => `Line ${u.po_line_no}: ${u.reason}`).join("; ") || "Some PO lines have no certificate" : null,
+        status: none ? "blocked" : "review",
+        status_note: none ? unmatched || "No PO line matched the certificates" : unmatched ? `Pending: ${unmatched}` : null,
         ai_summary: {
           model: res.model, at: new Date().toISOString(), warnings: res.data.warnings, ignored_rows: res.data.ignored_rows,
           unmatched: res.data.unmatched_po_lines, certificates: built.certs.map((c) => ({ no: c.cert_no_full, file_no: c.file_no, page: c.page, file: (files[c.file_no - 1] ?? files[0]).original_name })),
@@ -199,28 +208,64 @@ export async function extractMtcs(db: Db, poId: string, actor: string) {
       })
       .eq("id", poId);
     await db.from("files").update({ status: "read" }).in("id", files.map((f) => f.id));
-    await audit(db, po.company_code, poId, "mtc.read", { certificates: built.certs.length, lines: built.lines.length, model: AI_MODEL }, actor);
-    return { ok: true, blocked: !!blocked };
+    await audit(db, po.company_code, poId, "mtc.read", { certificates: built.certs.length, lines: built.lines.length, pending_lines: pending.length, model: AI_MODEL }, actor);
+    return { ok: true, blocked: none };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    await db.from("purchase_orders").update({ status: "draft", status_note: `AI reading failed: ${msg}` }).eq("id", poId);
+    const back = (approvedRows ?? []).length ? "partial" : "draft";
+    await db.from("purchase_orders").update({ status: back, status_note: `AI reading failed: ${msg}` }).eq("id", poId);
     await audit(db, po.company_code, poId, "mtc.read_failed", { error: msg }, actor);
     throw e;
   }
 }
 
-/** Builds the Excel from the export rows and stores it in the bucket. */
-export async function createExcel(db: Db, poId: string) {
-  const { data: po } = await db.from("purchase_orders").select("id, company_code, pur_no, excel_version").eq("id", poId).single();
-  if (!po) throw new Error("PO not found");
-  const { data: rows } = await db.from("export_lines").select("*").eq("po_id", poId).order("seq");
+export const batchFileName = (pur: string, batchNo: number) => (batchNo > 1 ? excelFileName(`${pur}-${batchNo}`) : excelFileName(pur));
+
+/** Builds the Excel for one approved batch and stores it in the bucket. */
+export async function createBatchExcel(db: Db, batchId: string) {
+  const { data: b } = await db.from("erp_batches").select("id, batch_no, excel_version, excel_path, purchase_orders(company_code, pur_no)").eq("id", batchId).single();
+  if (!b) throw new Error("Batch not found");
+  const po = b.purchase_orders as unknown as { company_code: string; pur_no: string };
+  const { data: rows } = await db.from("export_lines").select("*").eq("batch_id", batchId).order("seq");
   const buf = await buildMtcWorkbook((rows ?? []).map((r) => ({ ...r, qty: Number(r.qty) })));
-  const path = `${po.company_code}/excel/${excelFileName(po.pur_no)}`;
+  const path = `${po.company_code}/excel/${batchFileName(po.pur_no, b.batch_no)}`;
   const { error } = await db.storage.from(BUCKET).upload(path, buf, {
     upsert: true,
     contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
   if (error) throw new Error(error.message);
-  await db.from("purchase_orders").update({ excel_path: path, excel_version: (po.excel_version ?? 0) + 1 }).eq("id", poId);
+  await db.from("erp_batches").update({ excel_path: path, excel_version: b.excel_path ? (b.excel_version ?? 1) + 1 : 1 }).eq("id", batchId);
   return path;
+}
+
+/** Recomputes PO status and the summary columns shown in lists from its batches. */
+export async function refreshPoFromBatches(db: Db, poId: string) {
+  const [{ data: lines }, { data: approved }, { data: batches }, { count: pendingRows }] = await Promise.all([
+    db.from("po_lines").select("id, line_no, stock_code, stock_desc, unit, qty").eq("po_id", poId),
+    db.from("export_lines").select("po_line_id, qty").eq("po_id", poId).not("batch_id", "is", null),
+    db.from("erp_batches").select("*").eq("po_id", poId).order("batch_no"),
+    db.from("export_lines").select("id", { count: "exact", head: true }).eq("po_id", poId).is("batch_id", null),
+  ]);
+  const left = remainingLines((lines ?? []) as PoLine[], (approved ?? []).map((a) => ({ po_line_id: a.po_line_id, qty: Number(a.qty) })));
+  const bs = batches ?? [];
+  const last = bs[bs.length - 1];
+  let status: string;
+  if (!bs.length) status = pendingRows ? "review" : "draft";
+  else if (left.length) status = pendingRows ? "review" : "partial";
+  else status = bs.every((b) => b.erp_mtc_no) ? "erp_done" : "approved";
+  await db
+    .from("purchase_orders")
+    .update({
+      status,
+      status_note: left.length && bs.length ? `${left.length} line(s) pending the next shipment's MTC` : null,
+      header_mill: last?.header_mill ?? null,
+      header_cert_date: last?.header_cert_date ?? null,
+      erp_mtc_no: bs.map((b) => b.erp_mtc_no).filter(Boolean).join(", ") || null,
+      erp_mtc_date: last?.erp_mtc_date ?? null,
+      excel_path: last?.excel_path ?? null,
+      approved_by: last?.approved_by ?? null,
+      approved_at: last?.approved_at ?? null,
+    })
+    .eq("id", poId);
+  return { status, pendingLines: left.length };
 }

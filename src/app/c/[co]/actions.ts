@@ -3,8 +3,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireCompany } from "@/lib/auth";
 import { supabaseServer } from "@/lib/supabase/server";
-import { audit, createExcel, extractMtcs, getSettings, readPo, registerFile, ensurePo } from "@/lib/po";
-import { headerValues, runChecks, type PoLine } from "@/lib/match";
+import { audit, createBatchExcel, extractMtcs, getSettings, readPo, registerFile, ensurePo, refreshPoFromBatches } from "@/lib/po";
+import { headerValues, runChecks, remainingLines, type PoLine } from "@/lib/match";
 import { normalisePur, parseCertDate, PUR_RE } from "@/lib/normalize";
 
 export type ActionResult = { ok: boolean; message?: string; pur?: string };
@@ -104,7 +104,8 @@ export async function saveLines(co: string, pur: string, lines: { stock_code: st
   try {
     const { db, co: code } = await ctx(co);
     const po = await poFor(db, code, pur);
-    if (["approved", "erp_done"].includes(po.status)) return { ok: false, message: "Reopen the PO before changing its lines." };
+    const { count: batches } = await db.from("erp_batches").select("id", { count: "exact", head: true }).eq("po_id", po.id);
+    if (batches) return { ok: false, message: "Some lines are already approved for the ERP. Re-import the PO list to update quantities instead." };
     const clean = lines.filter((l) => l.stock_code.trim() && Number(l.qty) > 0);
     await db.from("export_lines").delete().eq("po_id", po.id);
     await db.from("po_lines").delete().eq("po_id", po.id);
@@ -171,62 +172,82 @@ export async function saveExportLines(co: string, pur: string, rows: EditRow[], 
   try {
     const { db, co: code, user } = await ctx(co);
     const po = await poFor(db, code, pur);
-    if (["approved", "erp_done"].includes(po.status)) return { ok: false, message: "Already approved. Reopen it to edit." };
-    const { data: lines } = await db.from("po_lines").select("*").eq("po_id", po.id);
+    if (["approved", "erp_done"].includes(po.status)) return { ok: false, message: "Every line is already approved." };
+    const [{ data: lines }, { data: approvedRows }] = await Promise.all([
+      db.from("po_lines").select("*").eq("po_id", po.id),
+      db.from("export_lines").select("po_line_id, qty, seq").eq("po_id", po.id).not("batch_id", "is", null),
+    ]);
+    const pending = remainingLines((lines ?? []) as PoLine[], (approvedRows ?? []).map((r) => ({ po_line_id: r.po_line_id, qty: Number(r.qty) })));
+    const startSeq = Math.max(0, ...(approvedRows ?? []).map((r) => r.seq));
     const clean = rows.map((r, i) => ({
-      po_id: po.id, seq: i + 1, po_line_id: r.po_line_id, stock_code: r.stock_code, stock_desc: r.stock_desc, unit: r.unit,
+      po_id: po.id, seq: startSeq + i + 1, po_line_id: r.po_line_id, stock_code: r.stock_code, stock_desc: r.stock_desc, unit: r.unit,
       qty: Number(r.qty), cert_date: r.cert_date || null, cert_no: r.cert_no?.trim() || null, heat_no: r.heat_no?.trim() || null,
       grade: r.grade?.trim().toUpperCase() || null, grade_remark: r.grade?.trim() ? null : r.grade_remark || null,
       grade_remark_note: r.grade_remark_note || null, mill_name: r.mill_name?.trim().toUpperCase() || null,
       certificate_id: r.certificate_id, flags: r.flags ?? [],
     }));
     if (approve) {
-      const checks = runChecks(clean, (lines ?? []) as PoLine[]);
-      const bad = checks.filter((c) => c.ok === false);
+      const bad = runChecks(clean, pending).filter((c) => c.ok === false);
       if (bad.length) return { ok: false, message: `Can't approve yet: ${bad.map((b) => `${b.title} (${b.detail})`).join("; ")}` };
     }
-    await db.from("export_lines").delete().eq("po_id", po.id);
-    if (clean.length) {
-      const { error } = await db.from("export_lines").insert(clean);
-      if (error) throw new Error(error.message);
-    }
+    await db.from("export_lines").delete().eq("po_id", po.id).is("batch_id", null);
+    // when approving, rows without a certificate are dropped: those lines simply stay pending
+    const toSave = approve ? clean.filter((r) => r.cert_no && r.heat_no).map((r, i) => ({ ...r, seq: startSeq + i + 1 })) : clean;
     if (approve) {
       const s = await getSettings(db);
-      const h = headerValues(clean, s.headerMillRule, s.headerDateRule);
-      await db
-        .from("purchase_orders")
-        .update({ status: "approved", status_note: null, header_mill: h.mill, header_cert_date: h.date, approved_by: user.email, approved_at: new Date().toISOString() })
-        .eq("id", po.id);
-      await createExcel(db, po.id);
-      await audit(db, code, po.id, "po.approved", { rows: clean.length, header: h });
-    } else {
-      const coverage = runChecks(clean, (lines ?? []) as PoLine[]).find((c) => c.key === "coverage");
-      await db.from("purchase_orders").update({ status: coverage?.ok ? "review" : "blocked" }).eq("id", po.id);
-      await audit(db, code, po.id, "po.draft_saved", { rows: clean.length });
+      const h = headerValues(toSave, s.headerMillRule, s.headerDateRule);
+      const { data: last } = await db.from("erp_batches").select("batch_no").eq("po_id", po.id).order("batch_no", { ascending: false }).limit(1).maybeSingle();
+      const { data: batch, error: be } = await db
+        .from("erp_batches")
+        .insert({ po_id: po.id, batch_no: (last?.batch_no ?? 0) + 1, header_mill: h.mill, header_cert_date: h.date, approved_by: user.email })
+        .select("id, batch_no")
+        .single();
+      if (be) throw new Error(be.message);
+      const { error } = await db.from("export_lines").insert(toSave.map((r) => ({ ...r, batch_id: batch.id })));
+      if (error) throw new Error(error.message);
+      await createBatchExcel(db, batch.id);
+      const st = await refreshPoFromBatches(db, po.id);
+      await audit(db, code, po.id, "po.approved", { batch: batch.batch_no, rows: toSave.length, header: h, pending_lines: st.pendingLines });
+      revalidatePath(`/c/${code}/po/${pur}`);
+      return { ok: true, message: st.pendingLines ? `Approved ${toSave.length} row(s). ${st.pendingLines} line(s) stay pending for the next shipment.` : "Approved. The Excel is ready." };
     }
+    if (toSave.length) {
+      const { error } = await db.from("export_lines").insert(toSave);
+      if (error) throw new Error(error.message);
+    }
+    await refreshPoFromBatches(db, po.id);
+    await audit(db, code, po.id, "po.draft_saved", { rows: toSave.length });
     revalidatePath(`/c/${code}/po/${pur}`);
-    return { ok: true, message: approve ? "Approved. The Excel is ready." : "Draft saved." };
+    return { ok: true, message: "Draft saved." };
   } catch (e) {
     return err(e);
   }
 }
 
-export async function reopen(co: string, pur: string) {
+/** Takes back the latest batch (only while it has no ERP MTC No.): its rows return to review. */
+export async function reopenBatch(co: string, pur: string, batchId: string) {
   const { db, co: code } = await ctx(co);
   const po = await poFor(db, code, pur);
-  await db.from("purchase_orders").update({ status: "review", approved_at: null, approved_by: null }).eq("id", po.id);
-  await audit(db, code, po.id, "po.reopened", null);
+  const { data: b } = await db.from("erp_batches").select("id, batch_no, erp_mtc_no").eq("id", batchId).eq("po_id", po.id).single();
+  const { data: last } = await db.from("erp_batches").select("id").eq("po_id", po.id).order("batch_no", { ascending: false }).limit(1).single();
+  if (!b || b.erp_mtc_no || last?.id !== b.id) return;
+  await db.from("export_lines").delete().eq("po_id", po.id).is("batch_id", null);
+  await db.from("export_lines").update({ batch_id: null }).eq("batch_id", b.id);
+  await db.from("erp_batches").delete().eq("id", b.id);
+  await refreshPoFromBatches(db, po.id);
+  await audit(db, code, po.id, "po.reopened", { batch: b.batch_no });
   revalidatePath(`/c/${code}/po/${pur}`);
 }
 
-export async function saveErpNo(co: string, pur: string, form: FormData) {
+export async function saveErpNo(co: string, pur: string, batchId: string, form: FormData) {
   const { db, co: code } = await ctx(co);
   const po = await poFor(db, code, pur);
   const no = String(form.get("erp_mtc_no") ?? "").trim();
   const date = String(form.get("erp_mtc_date") ?? "") || new Date().toISOString().slice(0, 10);
   if (!no) return;
-  await db.from("purchase_orders").update({ erp_mtc_no: no, erp_mtc_date: date, status: "erp_done" }).eq("id", po.id);
-  await audit(db, code, po.id, "po.erp_no", { erp_mtc_no: no, date });
+  await db.from("erp_batches").update({ erp_mtc_no: no, erp_mtc_date: date }).eq("id", batchId).eq("po_id", po.id);
+  await refreshPoFromBatches(db, po.id);
+  await audit(db, code, po.id, "po.erp_no", { erp_mtc_no: no, date, batchId });
   revalidatePath(`/c/${code}/po/${pur}`);
 }
 

@@ -76,6 +76,7 @@ const STATUS: Record<string, [string, string]> = {
   reading: ["AI reading", "blue"],
   review: ["Ready to review", "amber"],
   blocked: ["Blocked", "red"],
+  partial: ["Part approved", "blue"],
   approved: ["Excel ready", "green"],
   erp_done: ["In ERP", "green"],
 };
