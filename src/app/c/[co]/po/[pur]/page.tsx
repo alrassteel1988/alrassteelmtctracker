@@ -83,11 +83,15 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
         <form action={saveHeader.bind(null, co, pur)} className="card">
           <h2>Purchase order</h2>
           <div className="grid3">
-            <label className="f">PUR Date<input type="date" name="pur_date" defaultValue={po.pur_date ?? ""} disabled={locked} /></label>
-            <label className="f">Supplier code<input name="supplier_code" defaultValue={po.supplier_code ?? ""} disabled={locked} /></label>
+            <label className="f">PO date<input type="date" name="pur_date" defaultValue={po.pur_date ?? ""} disabled={locked} /></label>
+            <label className="f">Shipment date<input type="date" name="shipment_date" defaultValue={po.shipment_date ?? ""} disabled={locked} /></label>
             <label className="f">ERP doctype<input value={po.doctype} disabled /></label>
           </div>
-          <label className="f">Supplier name<input name="supplier_name" defaultValue={po.supplier_name ?? ""} disabled={locked} /></label>
+          <div className="grid3">
+            <label className="f">Supplier code<input name="supplier_code" defaultValue={po.supplier_code ?? ""} disabled={locked} /></label>
+            <label className="f" style={{ gridColumn: "span 2" }}>Supplier name<input name="supplier_name" defaultValue={po.supplier_name ?? ""} disabled={locked} /></label>
+          </div>
+          <label className="f">Supplier contract no.<input name="supplier_contract_no" defaultValue={po.supplier_contract_no ?? ""} disabled={locked} /></label>
           {!locked && <div className="row"><button className="btn sm">Save</button><span className="small mute">The supplier comes from the PO, never from the mill.</span></div>}
         </form>
 
@@ -129,7 +133,8 @@ export default async function PoPage({ params }: { params: Promise<{ co: string;
         </div>
       </div>
 
-      <LinesEditor co={co} pur={pur} locked={locked || rows.length > 0} initial={(lines ?? []).map((l) => ({ stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: Number(l.qty) }))} />
+      <LinesEditor co={co} pur={pur} locked={locked || rows.length > 0}
+        certs={(lines ?? []).map((l) => rows.filter((r) => r.po_line_id === l.id && r.cert_no).map((r) => `${r.cert_no}${r.heat_no ? ` (heat ${r.heat_no})` : ""}`))} initial={(lines ?? []).map((l) => ({ stock_code: l.stock_code, stock_desc: l.stock_desc, unit: l.unit, qty: Number(l.qty), purchase_qty: l.purchase_qty === null ? null : Number(l.purchase_qty), balance_qty: l.balance_qty === null ? null : Number(l.balance_qty) }))} />
       {!lines?.length && hasPo && <AiButton co={co} pur={pur} kind="po" label="Read lines from the PO copy" />}
 
       {rows.length > 0 && (

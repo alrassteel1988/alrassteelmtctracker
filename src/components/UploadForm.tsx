@@ -13,7 +13,9 @@ const safe = (n: string) => n.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
 
 function purFromName(name: string) {
   const m = name.match(/(?:^|[^A-Za-z0-9])(LP?|MP)\s*-?\s*(\d{5,9})/i);
-  return m ? (m[1].toUpperCase() === "MP" ? "MP" : "L") + m[2] : "";
+  if (m) return (m[1].toUpperCase() === "MP" ? "MP" : "L") + m[2];
+  const ipo = name.match(/(?:^|[^A-Za-z0-9])IPO\s*[-#:]?\s*(\d{4,6})(?!\d)/i) ?? name.match(/^(\d{5})(?![\d\/.,])/);
+  return ipo ? ipo[1].padStart(5, "0") : "";
 }
 
 /** Upload a PO copy and its MTCs straight to private storage, then register them against the PUR#. */
@@ -72,7 +74,7 @@ export function UploadForm({ co, pur: fixedPur, compact }: { co: string; pur?: s
       {!compact && <h2>Upload manually</h2>}
       {!fixedPur && (
         <div className="grid2">
-          <label className="f">PUR# <input value={pur} onChange={(e) => setPur(e.target.value)} placeholder="L0037354" required /></label>
+          <label className="f">PUR# <input value={pur} onChange={(e) => setPur(e.target.value)} placeholder="L0037354 or IPO# 01240" required /></label>
           <label className="f">Company <input value={co} disabled /></label>
         </div>
       )}

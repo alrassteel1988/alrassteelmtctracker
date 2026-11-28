@@ -6,7 +6,7 @@ import { excelFileName } from "@/lib/excel";
 type Receipt = { status: string; received_date: string | null };
 type Po = {
   id: string; company_code: string; pur_no: string; po_type: "IMP" | "LP"; status: string;
-  excel_path: string | null; erp_mtc_no: string | null; created_at: string; receipts: Receipt[];
+  excel_path: string | null; erp_mtc_no: string | null; created_at: string; shipment_date: string | null; receipts: Receipt[];
 };
 
 const complete = (p: Po) => p.status === "approved" || p.status === "erp_done";
@@ -17,6 +17,7 @@ function arrival(p: Po): { label: string; date: string | null } {
   if (actual.length) return { label: "Actual", date: actual[actual.length - 1] };
   const exp = p.receipts.filter((r) => r.status === "expected" && r.received_date).map((r) => r.received_date!).sort();
   if (exp.length) return { label: "Expected", date: exp[0] };
+  if (p.shipment_date) return { label: "Shipment", date: p.shipment_date };
   return { label: "", date: null };
 }
 
@@ -24,7 +25,7 @@ function arrival(p: Po): { label: string; date: string | null } {
 export async function OverviewBoard({ db, companies, type, status }: { db: SupabaseClient; companies: string[]; type?: string; status?: string }) {
   const { data } = await db
     .from("purchase_orders")
-    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, receipts(status, received_date)")
+    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, shipment_date, receipts(status, received_date)")
     .in("company_code", companies)
     .order("created_at", { ascending: false })
     .limit(1000);
@@ -97,7 +98,7 @@ export async function OverviewBoard({ db, companies, type, status }: { db: Supab
           </tbody>
         </table>
       </div>
-      <p className="small mute">Complete means the MTC is approved and its ERP Excel is ready. Arrival dates come from the receipts on each PO.</p>
+      <p className="small mute">Complete means the MTC is approved and its ERP Excel is ready. Arrival dates come from the receipts on each PO, or the PO&apos;s shipment date until a receipt is added.</p>
     </>
   );
 }

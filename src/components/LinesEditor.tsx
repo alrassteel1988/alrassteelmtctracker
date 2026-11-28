@@ -3,7 +3,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveLines } from "@/app/c/[co]/actions";
 
-type L = { stock_code: string; stock_desc: string; unit: string; qty: number };
+type L = { stock_code: string; stock_desc: string; unit: string; qty: number; purchase_qty?: number | null; balance_qty?: number | null };
 
 /** Parses rows copied from the ERP grid or Excel: Stock Code, Stock Desc, Unit, Quantity (tab separated). */
 function parsePaste(text: string): L[] {
@@ -17,7 +17,10 @@ function parsePaste(text: string): L[] {
     .filter((l) => l.stock_code && l.qty > 0);
 }
 
-export function LinesEditor({ co, pur, initial, locked }: { co: string; pur: string; initial: L[]; locked: boolean }) {
+const fmt = (n: number) => Number(n).toLocaleString("en", { minimumFractionDigits: 3 });
+
+export function LinesEditor({ co, pur, initial, locked, certs }: { co: string; pur: string; initial: L[]; locked: boolean; certs?: string[][] }) {
+  const hasRecv = initial.some((l) => l.purchase_qty != null || l.balance_qty != null);
   const router = useRouter();
   const [rows, setRows] = useState<L[]>(initial.length ? initial : []);
   const [edit, setEdit] = useState(initial.length === 0 && !locked);
@@ -35,12 +38,14 @@ export function LinesEditor({ co, pur, initial, locked }: { co: string; pur: str
         </div>
         <div className="scroll">
           <table>
-            <thead><tr><th>#</th><th>Stock Code</th><th>Stock Desc</th><th>Unit</th><th className="num">Quantity</th></tr></thead>
+            <thead><tr><th>#</th><th>Stock Code</th><th>Stock Desc</th><th>Unit</th><th className="num">Quantity</th>{hasRecv && <><th className="num">Purchased</th><th className="num">Balance</th></>}<th>MTC</th></tr></thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i}><td>{i + 1}</td><td className="mono g">{r.stock_code}</td><td className="g">{r.stock_desc}</td><td className="g">{r.unit}</td><td className="num g">{Number(r.qty).toLocaleString("en", { minimumFractionDigits: 3 })}</td></tr>
+                <tr key={i}><td>{i + 1}</td><td className="mono g">{r.stock_code}</td><td className="g">{r.stock_desc}</td><td className="g">{r.unit}</td><td className="num g">{fmt(r.qty)}</td>
+                  {hasRecv && <><td className="num">{r.purchase_qty == null ? "" : fmt(r.purchase_qty)}</td><td className="num">{r.balance_qty == null ? "" : fmt(r.balance_qty)}</td></>}
+                  <td className="small">{certs?.[i]?.length ? certs[i].join(", ") : <span className="mute">Not yet</span>}</td></tr>
               ))}
-              {!rows.length && <tr><td colSpan={5} className="mute">No lines yet.</td></tr>}
+              {!rows.length && <tr><td colSpan={8} className="mute">No lines yet.</td></tr>}
             </tbody>
           </table>
         </div>

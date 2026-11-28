@@ -5,7 +5,7 @@ import { requireCompany } from "@/lib/auth";
 import { supabaseServer } from "@/lib/supabase/server";
 import { audit, createExcel, extractMtcs, getSettings, readPo, registerFile, ensurePo } from "@/lib/po";
 import { headerValues, runChecks, type PoLine } from "@/lib/match";
-import { normalisePur, parseCertDate } from "@/lib/normalize";
+import { normalisePur, parseCertDate, PUR_RE } from "@/lib/normalize";
 
 export type ActionResult = { ok: boolean; message?: string; pur?: string };
 
@@ -31,7 +31,7 @@ export async function registerUploads(
   try {
     const { db, co: code } = await ctx(co);
     const p = normalisePur(pur);
-    if (!/^(L|MP)\d{5,9}$/.test(p)) return { ok: false, message: "PUR# should look like L0037354 or MP000921." };
+    if (!PUR_RE.test(p)) return { ok: false, message: "PUR# should look like L0037354, MP000921 or an IPO# like 01240." };
     await ensurePo(db, code, p);
     const results = [];
     for (const f of files) {
@@ -49,7 +49,7 @@ export async function registerUploads(
 export async function assignFile(co: string, fileId: string, form: FormData) {
   const { db, co: code } = await ctx(co);
   const pur = normalisePur(String(form.get("pur") ?? ""));
-  if (!/^(L|MP)\d{5,9}$/.test(pur)) return;
+  if (!PUR_RE.test(pur)) return;
   const kind = form.get("kind") === "po" ? "po" : "mtc";
   const poId = await ensurePo(db, code, pur);
   await db.from("files").update({ status: "linked", pur_no_hint: pur, kind }).eq("id", fileId).eq("company_code", code);
@@ -90,6 +90,8 @@ export async function saveHeader(co: string, pur: string, form: FormData) {
     .from("purchase_orders")
     .update({
       pur_date: d || null,
+      shipment_date: String(form.get("shipment_date") ?? "") || null,
+      supplier_contract_no: String(form.get("supplier_contract_no") ?? "").trim() || null,
       supplier_code: String(form.get("supplier_code") ?? "").trim().toUpperCase() || null,
       supplier_name: String(form.get("supplier_name") ?? "").trim().toUpperCase() || null,
     })
@@ -264,3 +266,67 @@ export async function addMillAlias(co: string, form: FormData) {
 }
 
 export { parseCertDate };
+
+/** Loads a PO list exported from the ERP (one row per line item). New POs are created; existing ones get their
+ *  header and line quantities refreshed. Lines of a PO that already has certificate rows are not replaced. */
+export async function importPoList(co: string, form: FormData): Promise<ActionResult & { summary?: string[] }> {
+  try {
+    const { db, co: code } = await ctx(co);
+    const file = form.get("file");
+    if (!(file instanceof File) || !file.size) return { ok: false, message: "Choose the Excel file first." };
+    if (file.size > 4 * 1024 * 1024) return { ok: false, message: "The file is larger than 4 MB; split it and import in parts." };
+    const { parsePoList } = await import("@/lib/poimport");
+    const { pos, skipped } = await parsePoList(await file.arrayBuffer());
+    if (!pos.length) return { ok: false, message: "No purchase order rows found in the file." };
+
+    const { data: existing } = await db
+      .from("purchase_orders")
+      .select("id, pur_no, supplier_code, export_lines(id)")
+      .eq("company_code", code)
+      .in("pur_no", pos.map((p) => p.pur_no));
+    const have = new Map((existing ?? []).map((e) => [e.pur_no, e]));
+    let created = 0, updated = 0, linesWritten = 0, kept = 0;
+
+    for (const p of pos) {
+      const header = {
+        pur_date: p.pur_date, supplier_name: p.supplier_name, supplier_contract_no: p.supplier_contract_no,
+        shipment_date: p.shipment_date, source: "po_list",
+      };
+      let poId: string;
+      const ex = have.get(p.pur_no);
+      if (ex) {
+        poId = ex.id;
+        await db.from("purchase_orders").update({ ...header, ...(p.supplier_code ? { supplier_code: p.supplier_code } : {}) }).eq("id", poId);
+        updated++;
+      } else {
+        const { data, error } = await db.from("purchase_orders").insert({ company_code: code, pur_no: p.pur_no, supplier_code: p.supplier_code, ...header }).select("id").single();
+        if (error) throw new Error(`${p.pur_no}: ${error.message}`);
+        poId = data.id;
+        created++;
+      }
+      const rows = p.lines.map((l, i) => ({ po_id: poId, line_no: i + 1, ...l }));
+      if (ex && (ex.export_lines as unknown[]).length) {
+        // certificate rows already point at these lines: only refresh the received / balance quantities
+        for (const l of p.lines) {
+          await db.from("po_lines").update({ purchase_qty: l.purchase_qty, balance_qty: l.balance_qty }).eq("po_id", poId).eq("stock_code", l.stock_code);
+        }
+        kept++;
+      } else {
+        await db.from("po_lines").delete().eq("po_id", poId);
+        const { error } = await db.from("po_lines").insert(rows);
+        if (error) throw new Error(`${p.pur_no} lines: ${error.message}`);
+        linesWritten += rows.length;
+      }
+    }
+    await audit(db, code, null, "po_list.imported", { file: file.name, pos: pos.length, created, updated, lines: linesWritten, skipped: skipped.length });
+    revalidatePath(`/c/${code}`, "layout");
+    const summary = [
+      `${pos.length} purchase orders read from ${file.name}: ${created} new, ${updated} updated, ${linesWritten} lines loaded.`,
+      ...(kept ? [`${kept} PO(s) already had certificate rows, so only their received and balance quantities were refreshed.`] : []),
+      ...(skipped.length ? [`Skipped ${skipped.length} row(s): ${skipped.slice(0, 5).join("; ")}${skipped.length > 5 ? "…" : ""}`] : []),
+    ];
+    return { ok: true, summary };
+  } catch (e) {
+    return err(e);
+  }
+}

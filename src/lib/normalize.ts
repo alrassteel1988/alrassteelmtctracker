@@ -81,20 +81,25 @@ export function dmy(iso: string | null | undefined) {
   return `${d}/${m}/${y}`;
 }
 
-/** File names start with the PUR#: "L0037354 MTC.pdf" → L0037354; "MP000921-po.pdf" → MP000921 */
+/** File names start with the PUR#: "L0037354 MTC.pdf" → L0037354; "MP000921-po.pdf" → MP000921; "IPO 01240 MTC.pdf" or "01240 MTC.pdf" → 01240 */
 export function purFromFileName(name: string): string | null {
-  const m = name.trim().match(/(?:^|[^A-Za-z0-9])(LP?|MP)\s*-?\s*(\d{5,9})/i);
-  if (!m) return null;
-  const prefix = m[1].toUpperCase() === "MP" ? "MP" : "L";
-  return prefix + m[2];
+  const n = name.trim();
+  const m = n.match(/(?:^|[^A-Za-z0-9])(LP?|MP)\s*-?\s*(\d{5,9})/i);
+  if (m) return (m[1].toUpperCase() === "MP" ? "MP" : "L") + m[2];
+  const ipo = n.match(/(?:^|[^A-Za-z0-9])IPO\s*[-#:]?\s*(\d{4,6})(?!\d)/i) ?? n.match(/^(\d{5})(?![\d\/.,])/);
+  return ipo ? ipo[1].padStart(5, "0") : null;
 }
 
 /** "L0037354 PO.pdf" is the PO copy; anything else is an MTC. */
 export function kindFromFileName(name: string): "po" | "mtc" {
   const base = name.replace(/\.[^.]+$/, "");
-  return /(^|[\s_\-\.])(L?PO|PO\s*COPY|LPO)([\s_\-\.]|$)/i.test(base.replace(/(LP?|MP)\s*-?\s*\d{5,9}/gi, " ")) ? "po" : "mtc";
+  return /(^|[\s_\-\.])(L?PO|PO\s*COPY|LPO)([\s_\-\.]|$)/i.test(base.replace(/(LP?|MP)\s*-?\s*\d{5,9}/gi, " ").replace(/IPO\s*[-#:]?\s*\d{4,6}/gi, " ").replace(/^\d{5}/, " ")) ? "po" : "mtc";
 }
 
-export function normalisePur(s: string) {
-  return s.trim().toUpperCase().replace(/\s+/g, "").replace(/^LP(?=\d)/, "L");
+export function normalisePur(s: string | number) {
+  const t = String(s).trim().toUpperCase().replace(/\s+/g, "").replace(/^LP(?=\d)/, "L").replace(/^IPO[-#:]?/, "");
+  return /^\d{1,6}$/.test(t) ? t.padStart(5, "0") : t;
 }
+
+/** L0037354 (local), MP000921 (import purchase) or 01240 (import PO / IPO#) */
+export const PUR_RE = /^(L\d{5,9}|MP\d{5,9}|\d{5,6})$/;
