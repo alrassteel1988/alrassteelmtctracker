@@ -22,6 +22,13 @@ async function poFor(db: Awaited<ReturnType<typeof supabaseServer>>, co: string,
 
 const err = (e: unknown): ActionResult => ({ ok: false, message: e instanceof Error ? e.message : String(e) });
 
+/** Explain database errors caused by a migration that has not been run yet. */
+function dbHint(message: string) {
+  return /column|schema cache|does not exist/i.test(message)
+    ? `${message}. The database needs the latest update: an admin should run supabase/migrations/0002_po_list_import.sql and 0003_partial_batches.sql in the Supabase SQL editor, then try again.`
+    : message;
+}
+
 /** Called by the browser after it has put the files in storage. */
 export async function registerUploads(
   co: string,
@@ -300,45 +307,58 @@ export async function importPoList(co: string, form: FormData): Promise<ActionRe
     const { pos, skipped } = await parsePoList(await file.arrayBuffer());
     if (!pos.length) return { ok: false, message: "No purchase order rows found in the file." };
 
-    const { data: existing } = await db
+    const { data: existing, error: exErr } = await db
       .from("purchase_orders")
-      .select("id, pur_no, supplier_code, export_lines(id)")
+      .select("id, pur_no, export_lines(id)")
       .eq("company_code", code)
       .in("pur_no", pos.map((p) => p.pur_no));
+    if (exErr) throw new Error(dbHint(exErr.message));
     const have = new Map((existing ?? []).map((e) => [e.pur_no, e]));
-    let created = 0, updated = 0, linesWritten = 0, kept = 0;
+    const created = pos.filter((p) => !have.has(p.pur_no)).length;
+    const updated = pos.length - created;
 
-    for (const p of pos) {
-      const header = {
-        pur_date: p.pur_date, supplier_name: p.supplier_name, supplier_contract_no: p.supplier_contract_no,
-        shipment_date: p.shipment_date, source: "po_list",
-      };
-      let poId: string;
-      const ex = have.get(p.pur_no);
-      if (ex) {
-        poId = ex.id;
-        await db.from("purchase_orders").update({ ...header, ...(p.supplier_code ? { supplier_code: p.supplier_code } : {}) }).eq("id", poId);
-        updated++;
-      } else {
-        const { data, error } = await db.from("purchase_orders").insert({ company_code: code, pur_no: p.pur_no, supplier_code: p.supplier_code, ...header }).select("id").single();
-        if (error) throw new Error(`${p.pur_no}: ${error.message}`);
-        poId = data.id;
-        created++;
-      }
-      const rows = p.lines.map((l, i) => ({ po_id: poId, line_no: i + 1, ...l }));
-      if (ex && (ex.export_lines as unknown[]).length) {
-        // certificate rows already point at these lines: only refresh the received / balance quantities
-        for (const l of p.lines) {
-          await db.from("po_lines").update({ purchase_qty: l.purchase_qty, balance_qty: l.balance_qty }).eq("po_id", poId).eq("stock_code", l.stock_code);
-        }
-        kept++;
-      } else {
-        await db.from("po_lines").delete().eq("po_id", poId);
-        const { error } = await db.from("po_lines").insert(rows);
-        if (error) throw new Error(`${p.pur_no} lines: ${error.message}`);
-        linesWritten += rows.length;
-      }
+    // one upsert for every PO header (unique company_code + pur_no)
+    const { data: saved, error: upErr } = await db
+      .from("purchase_orders")
+      .upsert(
+        pos.map((p) => ({
+          company_code: code, pur_no: p.pur_no,
+          pur_date: p.pur_date, supplier_name: p.supplier_name, supplier_contract_no: p.supplier_contract_no,
+          shipment_date: p.shipment_date, source: "po_list",
+        })),
+        { onConflict: "company_code,pur_no" },
+      )
+      .select("id, pur_no");
+    if (upErr) throw new Error(dbHint(upErr.message));
+    const idOf = new Map((saved ?? []).map((r) => [r.pur_no, r.id as string]));
+
+    // supplier code is only in some lists: set it where given, never blank it out
+    await Promise.all(pos.filter((p) => p.supplier_code && idOf.get(p.pur_no)).map((p) =>
+      db.from("purchase_orders").update({ supplier_code: p.supplier_code }).eq("id", idOf.get(p.pur_no)!)));
+
+    const keep = pos.filter((p) => ((have.get(p.pur_no)?.export_lines as unknown[] | undefined) ?? []).length > 0);
+    const replace = pos.filter((p) => !keep.includes(p));
+
+    // POs without certificate rows: replace their lines in two calls
+    const replaceIds = replace.map((p) => idOf.get(p.pur_no)).filter(Boolean) as string[];
+    if (replaceIds.length) {
+      const { error: delErr } = await db.from("po_lines").delete().in("po_id", replaceIds);
+      if (delErr) throw new Error(dbHint(delErr.message));
     }
+    const rows = replace.flatMap((p) => p.lines.map((l, i) => ({ po_id: idOf.get(p.pur_no)!, line_no: i + 1, ...l })));
+    if (rows.length) {
+      const { error: insErr } = await db.from("po_lines").insert(rows);
+      if (insErr) throw new Error(dbHint(insErr.message));
+    }
+    const linesWritten = rows.length;
+
+    // POs that already have certificate rows: only refresh received / balance quantities
+    for (const p of keep) {
+      const poId = idOf.get(p.pur_no)!;
+      await Promise.all(p.lines.map((l) =>
+        db.from("po_lines").update({ purchase_qty: l.purchase_qty, balance_qty: l.balance_qty }).eq("po_id", poId).eq("stock_code", l.stock_code)));
+    }
+    const kept = keep.length;
     await audit(db, code, null, "po_list.imported", { file: file.name, pos: pos.length, created, updated, lines: linesWritten, skipped: skipped.length });
     revalidatePath(`/c/${code}`, "layout");
     const summary = [

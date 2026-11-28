@@ -5,6 +5,8 @@ import { Shell, StatusBadge, STATUS_LABELS } from "@/components/Shell";
 import { dmy } from "@/lib/normalize";
 import { ImportPoList } from "@/components/ImportPoList";
 
+export const maxDuration = 60;
+
 type SP = { q?: string; status?: string; type?: string };
 
 export default async function Shipments({ params, searchParams }: { params: Promise<{ co: string }>; searchParams: Promise<SP> }) {

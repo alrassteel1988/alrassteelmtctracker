@@ -14,9 +14,19 @@ export function ImportPoList({ co }: { co: string }) {
       className="card soft"
       style={{ width: "100%" }}
       action={(fd) => start(async () => {
-        const r = await importPoList(co, fd);
-        setRes({ ok: r.ok, lines: r.ok ? r.summary ?? [] : [r.message ?? "Import failed"] });
-        if (r.ok) router.refresh();
+        try {
+          const r = await importPoList(co, fd);
+          setRes({ ok: r.ok, lines: r.ok ? r.summary ?? [] : [r.message ?? "Import failed"] });
+          if (r.ok) router.refresh();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setRes({
+            ok: false,
+            lines: [/Server Action|deployment/i.test(msg)
+              ? "The app was updated while this page was open. Reload the page (Ctrl+F5) and import again."
+              : `The import did not finish: ${msg}. Reload the page and try again.`],
+          });
+        }
       })}
     >
       <h3>Import purchase orders from the ERP</h3>
