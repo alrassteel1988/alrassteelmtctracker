@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { registerUploads } from "@/app/c/[co]/actions";
-import { purFromFileName } from "@/lib/normalize";
+import { normalisePur, purFromFileName } from "@/lib/normalize";
 
 async function sha256(file: File) {
   const buf = await file.arrayBuffer();
@@ -15,7 +15,9 @@ const safe = (n: string) => n.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
 const purFromName = (name: string) => purFromFileName(name) ?? "";
 
 /** Upload a PO copy and its MTCs straight to private storage, then register them against the PUR#. */
-export function UploadForm({ co, pur: fixedPur, compact }: { co: string; pur?: string; compact?: boolean }) {
+export type PoOption = { pur_no: string; supplier_name: string | null; po_type: string | null; status: string | null; shipment_date: string | null };
+
+export function UploadForm({ co, pur: fixedPur, compact, pos = [] }: { co: string; pur?: string; compact?: boolean; pos?: PoOption[] }) {
   const router = useRouter();
   const [pur, setPur] = useState(fixedPur ?? "");
   const [po, setPo] = useState<File | null>(null);
@@ -70,7 +72,28 @@ export function UploadForm({ co, pur: fixedPur, compact }: { co: string; pur?: s
       {!compact && <h2>Upload manually</h2>}
       {!fixedPur && (
         <div className="grid2">
-          <label className="f">PUR# <input value={pur} onChange={(e) => setPur(e.target.value)} placeholder={co === "ARBM" ? "LP020491 or IPO#G063" : "LP009263 or IPO#01259"} required /></label>
+          <label className="f">PUR#
+            <input
+              value={pur}
+              onChange={(e) => setPur(e.target.value)}
+              list={`pos-${co}`}
+              autoComplete="off"
+              placeholder={pos.length ? "Pick a PO from the list or type a new one" : co === "ARBM" ? "LP020491 or IPO#G063" : "LP009263 or IPO#01259"}
+              required
+            />
+            <datalist id={`pos-${co}`}>
+              {pos.map((p) => (
+                <option key={p.pur_no} value={p.pur_no}>
+                  {[p.po_type === "IMP" ? "Import" : "Local", p.supplier_name, p.shipment_date ? `ship ${p.shipment_date.split("-").reverse().join("/")}` : null].filter(Boolean).join(" · ")}
+                </option>
+              ))}
+            </datalist>
+            {pur.trim() && (() => {
+              const n = normalisePur(pur);
+              const hit = pos.find((p) => p.pur_no === n);
+              return <span className="small mute">{hit ? `Existing PO${hit.supplier_name ? `: ${hit.supplier_name}` : ""}` : `New PO ${n} will be created`}</span>;
+            })()}
+          </label>
           <label className="f">Company <input value={co} disabled /></label>
         </div>
       )}
