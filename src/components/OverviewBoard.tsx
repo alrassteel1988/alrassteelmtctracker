@@ -25,13 +25,28 @@ function arrival(p: Po): { label: string; date: string | null } {
 
 /** Overview: Import/Local totals with complete vs pending MTC, then one row per PO. Shows only the companies passed in. */
 export async function OverviewBoard({ db, companies, type, status }: { db: SupabaseClient; companies: string[]; type?: string; status?: string }) {
-  const { data } = await db
+  // The PO list must never come back empty just because an optional part (batches from 0003,
+  // shipment date from 0002) is missing in the database, so those are read separately.
+  const { data, error } = await db
     .from("purchase_orders")
-    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, shipment_date, receipts(status, received_date), erp_batches(id, batch_no, excel_path)")
+    .select("id, company_code, pur_no, po_type, status, excel_path, erp_mtc_no, created_at, receipts(status, received_date)")
     .in("company_code", companies)
     .order("created_at", { ascending: false })
-    .limit(1000);
-  const all = (data ?? []) as Po[];
+    .limit(2000);
+  const base = (data ?? []) as Omit<Po, "shipment_date" | "erp_batches">[];
+  const ids = base.map((p) => p.id);
+  const [ship, batches] = ids.length
+    ? await Promise.all([
+        db.from("purchase_orders").select("id, shipment_date").in("company_code", companies).limit(2000),
+        db.from("erp_batches").select("id, po_id, batch_no, excel_path").limit(5000),
+      ])
+    : [{ data: [] }, { data: [] }];
+  const shipOf = new Map(((ship.data ?? []) as { id: string; shipment_date: string | null }[]).map((r) => [r.id, r.shipment_date]));
+  const batchesOf = new Map<string, Po["erp_batches"]>();
+  for (const b of (batches.data ?? []) as (Po["erp_batches"][number] & { po_id: string })[]) {
+    batchesOf.set(b.po_id, [...(batchesOf.get(b.po_id) ?? []), b]);
+  }
+  const all: Po[] = base.map((p) => ({ ...p, receipts: p.receipts ?? [], shipment_date: shipOf.get(p.id) ?? null, erp_batches: batchesOf.get(p.id) ?? [] }));
   const sum = (t: "IMP" | "LP") => {
     const list = all.filter((p) => p.po_type === t);
     const done = list.filter(complete).length;
@@ -98,7 +113,7 @@ export async function OverviewBoard({ db, companies, type, status }: { db: Supab
                 </tr>
               );
             })}
-            {!rows.length && <tr><td colSpan={many ? 7 : 6} className="mute">No purchase orders yet.</td></tr>}
+            {!rows.length && <tr><td colSpan={many ? 7 : 6} className="mute">{error ? `Purchase orders could not be loaded: ${error.message}` : "No purchase orders yet."}</td></tr>}
           </tbody>
         </table>
       </div>

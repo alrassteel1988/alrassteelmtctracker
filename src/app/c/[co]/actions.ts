@@ -297,10 +297,10 @@ export async function importSuppliers(co: string, form: FormData): Promise<Actio
     if (!suppliers.length) return { ok: false, message: skipped[0] ?? "No suppliers found in the file." };
     const { error } = await db.from("suppliers").upsert(
       suppliers.map((s) => ({ company_code: code, code: s.code, name: s.name, updated_at: new Date().toISOString() })),
-      { onConflict: "company_code,name_key" },
+      { onConflict: "company_code,code" },
     );
     if (error) throw new Error(/suppliers|schema cache|does not exist/i.test(error.message)
-      ? `${error.message}. The database needs the supplier table: an admin should run supabase/migrations/0004_suppliers.sql in the Supabase SQL editor, then try again.`
+      ? `${error.message}. The database needs the supplier table: an admin should run supabase/migrations/0004_suppliers.sql and 0005_supplier_master.sql in the Supabase SQL editor, then try again.`
       : error.message);
     const filled = await fillSupplierCodes(db, code);
     await audit(db, code, null, "suppliers.imported", { file: file.name, suppliers: suppliers.length, filled, skipped: skipped.length });
@@ -326,7 +326,10 @@ async function fillSupplierCodes(db: Awaited<ReturnType<typeof supabaseServer>>,
     db.from("purchase_orders").select("id, supplier_name, supplier_code").eq("company_code", code),
   ]);
   if (error || !sup?.length) return 0;
-  const byKey = new Map(sup.map((s) => [s.name_key as string, s.code as string]));
+  // a name listed under several codes is ambiguous: leave those POs for a person to set
+  const codes = new Map<string, Set<string>>();
+  for (const s of sup) codes.set(s.name_key as string, (codes.get(s.name_key as string) ?? new Set()).add(s.code as string));
+  const byKey = new Map([...codes].filter(([, c]) => c.size === 1).map(([k, c]) => [k, [...c][0]]));
   const todo = (pos ?? []).filter((p) => !p.supplier_code && byKey.has(supplierKey(p.supplier_name)));
   await Promise.all(todo.map((p) => db.from("purchase_orders").update({ supplier_code: byKey.get(supplierKey(p.supplier_name)) }).eq("id", p.id)));
   return todo.length;
