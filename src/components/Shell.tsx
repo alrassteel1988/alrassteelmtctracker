@@ -51,7 +51,7 @@ export function Shell({ user, co, active, children }: { user: AppUser; co?: Comp
               <Link href="/admin/settings" className={active === "settings" ? "on" : ""}>Settings and uploaders</Link>
             </>
           )}
-          <div className="foot">Pilot build</div>
+          <div className="foot">Pilot build{process.env.VERCEL_GIT_COMMIT_SHA ? ` · ${process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)}` : ""}</div>
         </nav>
         <div>
           <div className="top">
