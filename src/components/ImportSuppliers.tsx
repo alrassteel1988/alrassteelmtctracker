@@ -30,7 +30,7 @@ export function ImportSuppliers({ co }: { co: string }) {
       })}
     >
       <h3>Import suppliers from the ERP</h3>
-      <p className="small mute">Columns Supplier Code and Supplier. Importing again updates names and codes; suppliers not in the file are kept.</p>
+      <p className="small mute">Columns Supplier Code and Supplier (or A/C Code and Account Name). Importing again adds new codes and updates names; suppliers not in the file are kept.</p>
       <div className="row">
         <input type="file" name="file" accept=".xlsx" required style={{ maxWidth: 360 }} />
         <button className="btn p" disabled={pending}>{pending ? "Importing…" : `Import into ${co}`}</button>

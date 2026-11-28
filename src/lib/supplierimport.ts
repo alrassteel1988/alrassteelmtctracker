@@ -3,8 +3,8 @@ import ExcelJS from "exceljs";
 
 export type ImportedSupplier = { code: string; name: string };
 
-const CODE = ["supplier code", "party code", "supp. code", "supp code", "code"];
-const NAME = ["supplier", "supplier name", "party name", "name"];
+const CODE = ["supplier code", "party code", "supp. code", "supp code", "a/c code", "ac code", "account code", "code"];
+const NAME = ["supplier", "supplier name", "party name", "account name", "name"];
 const key = (s: unknown) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 const text = (v: unknown) => {
   if (v && typeof v === "object" && "result" in v) v = (v as { result: unknown }).result;
@@ -37,7 +37,7 @@ export async function parseSupplierList(buf: ArrayBuffer): Promise<{ suppliers: 
       const code = text(row.getCell(codeCol).value), name = text(row.getCell(nameCol).value);
       if (!code && !name) continue;
       if (!code || !name) { skipped.push(`row ${r}: ${code || name} (missing ${code ? "name" : "code"})`); continue; }
-      seen.set(supplierKey(name), { code, name });
+      seen.set(code.toUpperCase(), { code, name });
     }
     return { suppliers: [...seen.values()], skipped };
   }
