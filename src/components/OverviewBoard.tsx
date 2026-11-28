@@ -106,7 +106,7 @@ export async function OverviewBoard({ db, companies, type, status }: { db: Supab
                   <td>{a.date ? <>{dmy(a.date)} <span className="small mute">{a.label}</span></> : <span className="mute">Not set</span>}</td>
                   <td className="mono"><Link href={`/c/${p.company_code}/po/${p.pur_no}`}>{p.pur_no}</Link></td>
                   <td className="mono"><Link href={`/c/${p.company_code}/po/${p.pur_no}`}>MTC-{p.pur_no}</Link>{p.erp_mtc_no && <div className="small mute">ERP MTC {p.erp_mtc_no}</div>}</td>
-                  <td><span className={`badge ${ok ? "green" : p.status === "partial" ? "blue" : "amber"}`}>{ok ? "Complete" : p.status === "partial" ? "Partly pending" : "Pending"}</span></td>
+                  <td><span className={`badge ${ok ? "complete" : "pending"}`}>{ok ? "Complete" : p.status === "partial" ? "Partly pending" : "Pending"}</span></td>
                   <td>{p.erp_batches?.filter((b) => b.excel_path).length
                     ? [...p.erp_batches].filter((b) => b.excel_path).sort((a, b) => a.batch_no - b.batch_no).map((b) => <div key={b.id}><a href={`/api/batch/${b.id}/excel`}>{batchName(p.pur_no, b.batch_no)}</a></div>)
                     : <span className="mute">Not created yet</span>}</td>

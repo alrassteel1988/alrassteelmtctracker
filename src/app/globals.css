@@ -79,6 +79,10 @@ td input:hover,td input:focus,td select:hover,td select:focus{border-color:var(-
 .badge.amber{background:var(--ambersoft);color:var(--amberink)}
 .badge.red{background:var(--redsoft);color:var(--red)}
 .badge.blue{background:var(--bluesoft);color:var(--blue)}
+/* MTC status: pending is bold red, complete is bold green */
+.badge.pending{background:var(--redsoft);color:var(--red);font-weight:800}
+.badge.complete{background:var(--greensoft);color:var(--green);font-weight:800}
+.supplier{font-weight:700;color:var(--blue)}
 .tag{display:inline-block;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:700;background:var(--bluesoft);color:var(--blue)}
 .tag.imp{background:var(--ambersoft);color:var(--amberink)}
 .checks{display:flex;flex-direction:column}
